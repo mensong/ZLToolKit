@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,51 +23,42 @@
  */
 #include <signal.h>
 #include <iostream>
-#include "Util/logger.h"
-#include "Poller/EventPoller.h"
-#include "Poller/Pipe.h"
 #include "Util/util.h"
-#include "Thread/AsyncTaskThread.h"
+#include "Util/logger.h"
+#include "Util/TimeTicker.h"
+#include "Poller/Timer.h"
 
 using namespace std;
 using namespace toolkit;
 
 int main() {
-	//设置退出信号处理函数
-	signal(SIGINT, [](int) { EventPollerPool::Instance().shutdown(); });
 	//设置日志
 	Logger::Instance().add(std::make_shared<ConsoleChannel>());
+    Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
-	std::shared_ptr<int> pCount1(new int(0));
-	//设置一个定时任务，任务标记为1
-	AsyncTaskThread::Instance().DoTaskDelay(1,1000,[pCount1](){
-		//该任务是打印一段日志，每隔1秒执行一次
-		DebugL << "timer type 1:" << ++(*pCount1);
-		return true;//返回true代表下次(1秒后)再次持续该任务，否则停止重复
-	});
 
-	//设置一个定时任务，任务标记也是为1(可以重名)，跟上面的任务不冲突
-	AsyncTaskThread::Instance().DoTaskDelay(1,1000,[](){
-		//该任务是打印一段日志，每隔1秒执行一次
-		DebugL << "timer type 1";
-		return true;//重复任务
-	});
+    Ticker ticker0;
+    Timer::Ptr timer0 = std::make_shared<Timer>(0.5,[&](){
+        TraceL << "timer0重复:" << ticker0.elapsedTime();
+        ticker0.resetTime();
+        return true;
+    }, nullptr);
 
-	//创建一个任务5秒后执行
-	AsyncTaskThread::Instance().DoTaskDelay(2,5000,[](){
-		//取消所有标记为1的任务
-		AsyncTaskThread::Instance().CancelTask(1);
-		DebugL << "all timer was canceled after 5 second";
-		return false;//该任务只执行一次
-	});
+    Timer::Ptr timer1 = std::make_shared<Timer>(1.0,[](){
+        DebugL << "timer1不再重复";
+        return false;
+    },nullptr);
 
-	EventPollerPool::Instance().wait();
-	return 0;
+    Ticker ticker2;
+    Timer::Ptr timer2 = std::make_shared<Timer>(2.0,[&]() -> bool {
+        InfoL << "timer2,测试任务中抛异常" << ticker2.elapsedTime();
+        ticker2.resetTime();
+        throw std::runtime_error("timer2,测试任务中抛异常");
+    },nullptr);
+
+    //退出程序事件处理
+    static semaphore sem;
+    signal(SIGINT, [](int) { sem.post(); });// 设置退出信号
+    sem.wait();
+    return 0;
 }
-
-
-
-
-
-
-

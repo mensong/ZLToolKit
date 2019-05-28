@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,33 +28,29 @@ namespace toolkit {
 
 Timer::Timer(float second,
 			 const function<bool()> &cb,
-			 const TaskExecutor::Ptr &executor)
-{
-	_canceled = std::make_shared<bool>();
-	TaskExecutor::Ptr executor_tmp = executor;
-	if(!executor_tmp){
-		executor_tmp =  EventPollerPool::Instance().getPoller();
+			 const EventPoller::Ptr &poller,
+             bool continueWhenException) {
+    _poller = poller;
+	if(!_poller){
+        _poller = EventPollerPool::Instance().getPoller();
 	}
-	std::weak_ptr<bool> canceledWeak = _canceled;
-	AsyncTaskThread::Instance().DoTaskDelay(reinterpret_cast<uint64_t>(this),second * 1000,[this,cb,canceledWeak,executor_tmp](){
-		executor_tmp->async([this,cb,canceledWeak]() {
-			auto canceledStrog = canceledWeak.lock();
-			if(!canceledStrog){
-				AsyncTaskThread::Instance().CancelTask(reinterpret_cast<uint64_t>(this));
-				return;
-			}
-			if(!cb()) {
-				AsyncTaskThread::Instance().CancelTask(reinterpret_cast<uint64_t>(this));
-			}
-		});
-		return true;
-	});
-
-
+	_tag = _poller->doDelayTask(second * 1000, [cb, second , continueWhenException]() {
+        try {
+            if (cb()) {
+                //重复的任务
+                return (uint64_t) (1000 * second);
+            }
+            //该任务不再重复
+            return (uint64_t) 0;
+        }catch (std::exception &ex){
+            ErrorL << "执行定时器任务捕获到异常:" << ex.what();
+            return continueWhenException ? (uint64_t) (1000 * second) : 0;
+        }
+    });
 }
-Timer::~Timer()
-{
-	AsyncTaskThread::Instance().CancelTask(reinterpret_cast<uint64_t>(this));
+
+Timer::~Timer() {
+	_tag->cancel();
 }
 
 }  // namespace toolkit

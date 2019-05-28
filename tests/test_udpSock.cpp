@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -53,8 +53,8 @@ int main() {
 	Logger::Instance().add(std::make_shared<ConsoleChannel>());
 	Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
-	Socket::Ptr sockRecv(new Socket(nullptr, nullptr));//创建一个UDP数据接收端口
-	Socket::Ptr sockSend(new Socket(nullptr, nullptr));//创建一个UDP数据发送端口
+	Socket::Ptr sockRecv(new Socket());//创建一个UDP数据接收端口
+	Socket::Ptr sockSend(new Socket());//创建一个UDP数据发送端口
 	sockRecv->bindUdpSock(9001);//接收UDP绑定9001端口
 	sockSend->bindUdpSock(0);//发送UDP随机端口
 
@@ -65,11 +65,11 @@ int main() {
 
 	struct sockaddr addrDst;
 	makeAddr(&addrDst,"127.0.0.1",9001);//UDP数据发送地址
-
+	sockSend->setSendPeerAddr(&addrDst);
 	int i = 0;
 	while(!exitProgram){
         //每隔一秒往对方发送数据
-		sockSend->send(to_string(i++),SOCKET_DEFAULE_FLAGS,&addrDst);
+		sockSend->send(to_string(i++));
 		sleep(1);
 	}
 	return 0;

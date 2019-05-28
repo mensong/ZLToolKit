@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -37,6 +37,7 @@
 #include <memory>
 #include <mutex>
 #include "Util/util.h"
+#include "Util/List.h"
 #include "Thread/semaphore.h"
 
 using namespace std;
@@ -65,12 +66,8 @@ public:
      */
     static Logger &Instance();
 
-    /**
-     * 废弃的接口，无实际操作
-     * @deprecated
-     */
-    static void Destory(){};
 
+	Logger(const string &loggerName);
     ~Logger();
 
     /**
@@ -103,13 +100,19 @@ public:
      * @param level log等级
      */
     void setLevel(LogLevel level);
+
+    /**
+     * 获取logger名
+     * @return
+     */
+    const string &getName() const;
 private:
-    Logger();
     void writeChannels(const LogContextPtr &stream);
     void write(const LogContextPtr &stream);
 private:
     map<string, std::shared_ptr<LogChannel> > _channels;
     std::shared_ptr<LogWriter> _writer;
+    string _loggerName;
 };
 
 ///////////////////LogContext///////////////////
@@ -119,21 +122,12 @@ private:
 class LogContext : public ostringstream{
 public:
     friend class LogContextCapturer;
-
-    /**
-     * 打印日志至输出流
-     * @param ost 输出流
-     * @param enableColor 是否请用颜色
-     * @param enableDetail 是否打印细节(函数名、源码文件名、源码行)
-     */
-    void format(ostream &ost,bool enableColor = true, bool enableDetail = true) ;
-    static std::string printTime(const timeval &tv);
 public:
     LogLevel _level;
     int _line;
-    string _file;
-    string _function;
-    timeval _tv;
+    const char *_file;
+	const char *_function;
+    struct timeval _tv;
 private:
     LogContext(LogLevel level,const char *file,const char *function,int line);
 };
@@ -194,7 +188,7 @@ private:
 private:
     bool _exit_flag;
     std::shared_ptr<thread> _thread;
-    deque<LogContextPtr> _pending;
+    List<LogContextPtr> _pending;
     semaphore _sem;
     mutex _mutex;
     Logger &_logger;
@@ -206,12 +200,25 @@ private:
  */
 class LogChannel : public noncopyable{
 public:
-	LogChannel(const string& name, LogLevel level = LDebug);
+	LogChannel(const string& name, LogLevel level = LTrace);
 	virtual ~LogChannel();
-	virtual void write(const LogContextPtr & stream) = 0;
-
+	virtual void write(const Logger &logger,const LogContextPtr & stream) = 0;
 	const string &name() const ;
 	void setLevel(LogLevel level);
+
+	static std::string printTime(const timeval &tv);
+protected:
+	/**
+    * 打印日志至输出流
+    * @param ost 输出流
+    * @param enableColor 是否请用颜色
+    * @param enableDetail 是否打印细节(函数名、源码文件名、源码行)
+    */
+	virtual void format(const Logger &logger,
+						ostream &ost,
+						const LogContextPtr & stream,
+						bool enableColor = true,
+						bool enableDetail = true);
 protected:
 	string _name;
 	LogLevel _level;
@@ -222,9 +229,9 @@ protected:
  */
 class ConsoleChannel : public LogChannel {
 public:
-    ConsoleChannel(const string &name = "ConsoleChannel" , LogLevel level = LDebug) ;
+    ConsoleChannel(const string &name = "ConsoleChannel" , LogLevel level = LTrace) ;
     ~ConsoleChannel();
-    void write(const LogContextPtr &logContext) override;
+    void write(const Logger &logger , const LogContextPtr &logContext) override;
 };
 
 /**
@@ -232,10 +239,10 @@ public:
  */
 class FileChannel : public LogChannel {
 public:
-    FileChannel(const string &name = "FileChannel",const string &path = exePath() + ".log", LogLevel level = LDebug);
+    FileChannel(const string &name = "FileChannel",const string &path = exePath() + ".log", LogLevel level = LTrace);
     ~FileChannel();
 
-    void write(const std::shared_ptr<LogContext> &stream) override;
+    void write(const Logger &logger , const std::shared_ptr<LogContext> &stream) override;
     void setPath(const string &path);
     const string &path() const;
 protected:
@@ -245,6 +252,16 @@ protected:
     ofstream _fstream;
     string _path;
 };
+
+#if defined(__MACH__) || ((defined(__linux) || defined(__linux__)) &&  !defined(ANDROID))
+class SysLogChannel : public LogChannel {
+public:
+    SysLogChannel(const string &name = "SysLogChannel" , LogLevel level = LTrace) ;
+    ~SysLogChannel();
+    void write(const Logger &logger , const LogContextPtr &logContext) override;
+};
+#endif//#if defined(__MACH__) || ((defined(__linux) || defined(__linux__)) &&  !defined(ANDROID))
+
 
 #define TraceL LogContextCapturer(Logger::Instance(), LTrace, __FILE__,__FUNCTION__, __LINE__)
 #define DebugL LogContextCapturer(Logger::Instance(),LDebug, __FILE__,__FUNCTION__, __LINE__)

@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +30,7 @@
 #include <functional>
 #include "Socket.h"
 #include "Util/TimeTicker.h"
-#include "Thread/WorkThreadPool.h"
+#include "Util/SSLBox.h"
 
 using namespace std;
 
@@ -43,8 +43,7 @@ class TcpClient :
         public SocketHelper{
 public:
 	typedef std::shared_ptr<TcpClient> Ptr;
-	TcpClient(const EventPoller::Ptr &poller = nullptr,
-              const TaskExecutor::Ptr &executor = nullptr);
+	TcpClient(const EventPoller::Ptr &poller = nullptr);
 	virtual ~TcpClient();
     //开始连接服务器，strUrl可以是域名或ip
     void startConnect(const string &strUrl, uint16_t iPort, float fTimeOutSec = 3);
@@ -72,10 +71,62 @@ private:
 	void onSockErr(const SockException &ex);
 private:
     EventPoller::Ptr _poller;
-    TaskExecutor::Ptr _executor;
     std::shared_ptr<Timer> _managerTimer;
     string _netAdapter = "0.0.0.0";
 };
+
+template<typename TcpClientType>
+class TcpClientWithSSL: public TcpClientType {
+public:
+    typedef std::shared_ptr<TcpClientWithSSL> Ptr;
+
+    template<typename ...ArgsType>
+    TcpClientWithSSL(ArgsType &&...args):TcpClientType(std::forward<ArgsType>(args)...){}
+    virtual ~TcpClientWithSSL(){}
+
+    void onRecv(const Buffer::Ptr &pBuf) override{
+        if(_sslBox){
+            _sslBox->onRecv(pBuf);
+        }else{
+            TcpClientType::onRecv(pBuf);
+        }
+    }
+
+    int send(const Buffer::Ptr &buf) override{
+        if(_sslBox){
+            _sslBox->onSend(buf);
+            return buf->size();
+        }
+        return TcpClientType::send(buf);
+    }
+
+    //添加public_onRecv和public_send函数是解决较低版本gcc一个lambad中不能访问protected或private方法的bug
+    inline void public_onRecv(const Buffer::Ptr &pBuf){
+        TcpClientType::onRecv(pBuf);
+    }
+    inline void public_send(const Buffer::Ptr &pBuf){
+        TcpClientType::send(pBuf);
+    }
+protected:
+    void onConnect(const SockException &ex)  override {
+        if(!ex){
+            _sslBox.reset(new SSL_Box(false));
+            _sslBox->setOnDecData([this](const Buffer::Ptr &pBuf){
+                public_onRecv(pBuf);
+            });
+            _sslBox->setOnEncData([this](const Buffer::Ptr &pBuf){
+                public_send(pBuf);
+            });
+        }
+        TcpClientType::onConnect(ex);
+    }
+private:
+    std::shared_ptr<SSL_Box> _sslBox;
+};
+
+
+
+
 
 } /* namespace toolkit */
 

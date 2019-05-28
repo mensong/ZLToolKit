@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -62,30 +62,31 @@ public:
 template<typename TcpSessionType>
 class TcpSessionWithSSL: public TcpSessionType {
 public:
-	TcpSessionWithSSL(const Socket::Ptr &pSock):TcpSessionType(pSock){
-		_sslBox.setOnEncData([&](const char *data, uint32_t len){
-			public_send(data,len);
+	template<typename ...ArgsType>
+	TcpSessionWithSSL(ArgsType &&...args):TcpSessionType(std::forward<ArgsType>(args)...){
+		_sslBox.setOnEncData([&](const Buffer::Ptr &buffer){
+			public_send(buffer);
 		});
-		_sslBox.setOnDecData([&](const char *data, uint32_t len){
-			public_onRecv(data,len);
+		_sslBox.setOnDecData([&](const Buffer::Ptr &buffer){
+            public_onRecv(buffer);
 		});
 	}
-	virtual ~TcpSessionWithSSL(){
-		//_sslBox.shutdown();
-	}
+	virtual ~TcpSessionWithSSL(){}
+
 	void onRecv(const Buffer::Ptr &pBuf) override{
-		_sslBox.onRecv(pBuf->data(), pBuf->size());
+		_sslBox.onRecv(pBuf);
 	}
 
-	int public_send(const char *data, uint32_t len){
-		return TcpSessionType::send(TcpSessionType::obtainBuffer(data,len));
-	}
-	void public_onRecv(const char *data, uint32_t len){
-		TcpSessionType::onRecv(TcpSessionType::obtainBuffer(data,len));
-	}
+	//添加public_onRecv和public_send函数是解决较低版本gcc一个lambad中不能访问protected或private方法的bug
+	inline void public_onRecv(const Buffer::Ptr &pBuf){
+        TcpSessionType::onRecv(pBuf);
+    }
+    inline void public_send(const Buffer::Ptr &pBuf){
+        TcpSessionType::send(pBuf);
+    }
 protected:
 	virtual int send(const Buffer::Ptr &buf) override{
-		_sslBox.onSend(buf->data(), buf->size());
+		_sslBox.onSend(buf);
 		return buf->size();
 	}
 private:

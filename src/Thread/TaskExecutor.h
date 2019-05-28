@@ -7,7 +7,7 @@
 
 #include <memory>
 #include <functional>
-#include "List.h"
+#include "Util/List.h"
 #include "Util/util.h"
 #include "Util/TimeTicker.h"
 
@@ -113,12 +113,6 @@ public:
     }
 
 private:
-    inline static uint64_t getCurrentMicrosecond() {
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        return tv.tv_sec * 1000 * 1000 + tv.tv_usec;
-    }
-private:
     class TimeRecord {
     public:
         TimeRecord(uint64_t tm,bool slp){
@@ -160,7 +154,7 @@ public:
      * @param may_sync 是否允许同步执行该任务
      * @return 任务是否添加成功
      */
-    virtual bool async(const Task &task, bool may_sync = true) = 0;
+    virtual bool async(Task &&task, bool may_sync = true) = 0;
 
     /**
      * 最高优先级方式异步执行任务
@@ -168,8 +162,8 @@ public:
      * @param may_sync 是否允许同步执行该任务
      * @return 任务是否添加成功
      */
-    virtual bool async_first(const Task &task, bool may_sync = true) {
-        return async(task,may_sync);
+    virtual bool async_first(Task &&task, bool may_sync = true) {
+        return async(std::move(task),may_sync);
     };
 
     /**
@@ -177,26 +171,17 @@ public:
      * @param task
      * @return
      */
-    virtual bool sync(const Task &task) = 0;
+    virtual bool sync(Task &&task) = 0;
 
     /**
      * 最高优先级方式同步执行任务
      * @param task
      * @return
      */
-    virtual bool sync_first(const Task &task) {
-        return sync(task);
+    virtual bool sync_first(Task &&task) {
+        return sync(std::move(task));
     };
 
-    /**
-     * 等待执行线程退出
-     */
-    virtual void wait() = 0;
-
-    /**
-     * 通知执行线程退出
-     */
-    virtual void shutdown() = 0;
 };
 
 class TaskExecutorGetter {
@@ -209,38 +194,14 @@ public:
      */
     virtual TaskExecutor::Ptr getExecutor() = 0;
 
-    /**
-     * 等待所有任务执行线程退出
-     */
-    virtual void wait() = 0;
-
-    /**
-     * 通知所有执行线程退出
-     */
-    virtual void shutdown() = 0;
 };
 
 
 class TaskExecutorGetterImp : public TaskExecutorGetter{
 public:
-    /**
-     *
-     * @tparam FUN 任务执行器创建方式
-     * @param fun 任务执行器创建lambad
-     * @param threadnum 任务执行器个数，默认cpu核心数
-     */
-    template <typename FUN>
-    TaskExecutorGetterImp(FUN &&fun,int threadnum = thread::hardware_concurrency()){
-        for (int i = 0; i < threadnum; i++) {
-            _threads.emplace_back(fun());
-        }
-    }
+    TaskExecutorGetterImp(){}
 
-    ~TaskExecutorGetterImp(){
-        shutdown();
-        wait();
-        _threads.clear();
-    }
+    ~TaskExecutorGetterImp(){}
 
     /**
      * 根据线程负载情况，获取最空闲的任务执行器
@@ -275,22 +236,6 @@ public:
         return executor_min_load;
     }
 
-    /**
-     * 等待所有线程退出
-     */
-    void wait() override{
-        for (auto &th : _threads){
-            th->wait();
-        }
-    }
-    /**
-     *  关闭所有线程
-     */
-    void shutdown() override{
-        for (auto &th : _threads){
-            th->shutdown();
-        }
-    }
 
     /**
      * 获取所有线程的负载率
@@ -324,6 +269,26 @@ public:
                 }
             }, false);
             ++index;
+        }
+    }
+
+    template <typename FUN>
+    void for_each(FUN &&fun){
+        for(auto &th : _threads){
+            fun(th);
+        }
+    }
+protected:
+    /**
+     *
+     * @tparam FUN 任务执行器创建方式
+     * @param fun 任务执行器创建lambad
+     * @param threadnum 任务执行器个数，默认cpu核心数
+     */
+    template <typename FUN>
+    void createThreads(FUN &&fun,int threadnum = thread::hardware_concurrency()){
+        for (int i = 0; i < threadnum; i++) {
+            _threads.emplace_back(fun());
         }
     }
 protected:

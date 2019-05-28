@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,9 +43,7 @@ public:
 	thread_group() {
 	}
 	~thread_group() {
-		for (auto &th : _threads) {
-			delete th.second;
-		}
+		_threads.clear();
 	}
 
 	bool is_this_thread_in() {
@@ -65,11 +63,11 @@ public:
 	}
 
 	template<typename F>
-	thread* create_thread(F threadfunc) {
-		auto thread_new =new thread(threadfunc);
+	thread* create_thread(F &&threadfunc) {
+		auto thread_new = std::make_shared<thread>(threadfunc);
 		_thread_id = thread_new->get_id();
 		_threads[_thread_id] = thread_new;
-		return thread_new;
+		return thread_new.get();
 	}
 
 	void remove_thread(thread* thrd) {
@@ -93,7 +91,7 @@ public:
 		return _threads.size();
 	}
 private:
-	unordered_map<thread::id, thread*> _threads;
+	unordered_map<thread::id, std::shared_ptr<thread> > _threads;
 	thread::id _thread_id;
 };
 

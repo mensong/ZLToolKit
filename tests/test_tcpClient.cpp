@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,15 +31,11 @@ using namespace toolkit;
 class TestClient: public TcpClient {
 public:
 	typedef std::shared_ptr<TestClient> Ptr;
-	TestClient():TcpClient(nullptr, nullptr) {
+	TestClient():TcpClient() {
 		DebugL;
 	}
 	~TestClient(){
 		DebugL;
-	}
-	void connect(){
-		//这里改成实际服务器地址
-		startConnect("127.0.0.1",9000);
 	}
 protected:
 	virtual void onConnect(const SockException &ex) override{
@@ -48,7 +44,7 @@ protected:
 	}
 	virtual void onRecv(const Buffer::Ptr &pBuf) override{
 		//接收数据事件
-		DebugL << pBuf->data();
+		DebugL << pBuf->data() << " from port:" << get_peer_port();
 	}
 	virtual void onSend() override{
 		//发送阻塞后，缓存清空事件
@@ -57,7 +53,6 @@ protected:
 	virtual void onErr(const SockException &ex) override{
 		//断开连接事件，一般是EOF
 		WarnL << ex.what();
-		connect();
 	}
     virtual void onManager() override{
 		//定时发送数据到服务器
@@ -77,16 +72,19 @@ private:
 
 
 int main() {
-    signal(SIGINT, [](int) { EventPollerPool::Instance().shutdown(); });// 设置退出信号
     // 设置日志系统
     Logger::Instance().add(std::make_shared<ConsoleChannel>());
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
-    {
-        TestClient::Ptr client(new TestClient());//必须使用智能指针
-        client->connect();//连接服务器
-        EventPollerPool::Instance().wait();
-    }
+	TestClient::Ptr client(new TestClient());//必须使用智能指针
+	client->startConnect("127.0.0.1",9000);//连接服务器
 
+	TcpClientWithSSL<TestClient>::Ptr clientSSL(new TcpClientWithSSL<TestClient>());//必须使用智能指针
+	clientSSL->startConnect("127.0.0.1",9001);//连接服务器
+
+	//退出程序事件处理
+	static semaphore sem;
+	signal(SIGINT, [](int) { sem.post(); });// 设置退出信号
+	sem.wait();
 	return 0;
 }

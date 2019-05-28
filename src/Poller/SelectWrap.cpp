@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -60,14 +60,16 @@ bool FdSet::isSet(int fd) {
 	return  FD_ISSET(fd, (fd_set *)_ptr);
 }
 
+int zl_select(int cnt, FdSet *read, FdSet *write, FdSet *err, struct timeval *tv) {
+	void *rd, *wt, *er;
+	rd = read ? read->_ptr : NULL;
+	wt = write ? write->_ptr : NULL;
+	er = err ? err->_ptr : NULL;
+	return ::select(cnt, (fd_set *) rd, (fd_set *) wt, (fd_set *) er, tv);
+}
+
+
 } /* namespace toolkit */
 
-int zl_select(int cnt,FdSet *read,FdSet *write,FdSet *err,struct timeval *tv){
-	void *rd,*wt,*er;
-	rd = read?read->_ptr:NULL;
-	wt = write?write->_ptr:NULL;
-	er = err?err->_ptr:NULL;
-	return ::select(cnt,(fd_set*)rd,(fd_set*)wt,(fd_set*)er,tv);
-}
 
 

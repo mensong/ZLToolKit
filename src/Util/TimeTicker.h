@@ -1,7 +1,7 @@
 ﻿ /*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,13 +40,13 @@ public:
 		if(!printLog){
 			_stream.clear();
 		}
-		_begin = getNowTime();
+		_begin = getCurrentMillisecond();
 		_created = _begin;
 		_minMs = minMs;
 		_where = where;
 	}
 	~Ticker() {
-		int64_t tm = getNowTime() - _begin;
+		int64_t tm = getCurrentMillisecond() - _begin;
 		if (tm > _minMs) {
 			_stream << _where << " take time:" << tm << endl;
 		} else {
@@ -55,22 +55,15 @@ public:
 	}
 	uint64_t elapsedTime() {
 		_stream.clear();
-		return getNowTime() - _begin;
+		return getCurrentMillisecond() - _begin;
 	}
 	uint64_t createdTime() {
 		_stream.clear();
-		return getNowTime() - _created;
+		return getCurrentMillisecond() - _created;
 	}
 	void resetTime() {
 		_stream.clear();
-		_begin = getNowTime();
-	}
-
-private:
-	inline static uint64_t getNowTime() {
-		struct timeval tv;
-		gettimeofday(&tv, NULL);
-		return tv.tv_sec * 1000 + tv.tv_usec / 1000;
+		_begin = getCurrentMillisecond();
 	}
 private:
 	uint64_t _begin;

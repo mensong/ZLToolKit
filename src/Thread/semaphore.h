@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -60,9 +60,8 @@ public:
 			sem_post(&_sem);
 		}
 #else
-		unique_lock<mutex> lock(_mutex);
-		_count += n;
-		if(n == 1){
+        _count += n;
+        if(n == 1){
 			_condition.notify_one();
 		}else{
 			_condition.notify_all();
@@ -85,7 +84,7 @@ private:
 #if defined(HAVE_SEM)
 	sem_t _sem;
 #else
-	int _count;
+	atomic_int _count;
 	mutex _mutex;
 	condition_variable_any _condition;
 #endif

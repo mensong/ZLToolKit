@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,8 +30,14 @@
 #include <unordered_map>
 #include <condition_variable>
 #include <functional>
+#include "Poller/EventPoller.h"
 
 using namespace std;
+
+//自适应环形缓存大小的取值范围
+#define RING_MIN_SIZE 32
+#define RING_MAX_SIZE 512
+#define LOCK_GUARD(mtx) lock_guard<decltype(mtx)> lck(mtx)
 
 namespace toolkit {
 
@@ -44,242 +50,460 @@ public:
 	virtual void onWrite(const T &in,bool isKey = true) = 0;
 };
 
-//实现了一个一写多读得环形缓冲的模板类
-template<typename T> class RingBuffer: public enable_shared_from_this<
-		RingBuffer<T> > {
+template<typename T>
+class _RingStorage;
+
+template<typename T>
+class _RingStorageInternal;
+
+template<typename T>
+class _RingReaderDispatcher;
+
+/**
+ * 环形缓存读取器
+ * 该对象的事件触发都会在绑定的poller线程中执行
+ * 所以把锁去掉了
+ * 对该对象的一切操作都应该在poller线程中执行
+ * @tparam T
+ */
+template<typename T>
+class _RingReader {
 public:
-	typedef std::shared_ptr<RingBuffer> Ptr;
+    typedef std::shared_ptr<_RingReader> Ptr;
+    friend class _RingReaderDispatcher<T>;
 
-	class RingReader {
-	public:
-		friend class RingBuffer;
-		typedef std::shared_ptr<RingReader> Ptr;
-		RingReader(const std::shared_ptr<RingBuffer> &buffer,bool useBuffer) {
-			_buffer = buffer;
-			_curpos = buffer->_ringKeyPos;
-			_useBuffer = useBuffer;
-		}
-		~RingReader() {
-			auto strongBuffer = _buffer.lock();
-			if (strongBuffer) {
-				strongBuffer->release(this);
-			}
-		}
-		//重新定位读取器至最新的数据位置
-		void reset(bool keypos = true) {
-			auto strongBuffer = _buffer.lock();
-			if (strongBuffer) {
-				if(keypos){
-					_curpos = strongBuffer->_ringKeyPos; //定位读取器
-				}else{
-					_curpos = strongBuffer->_ringPos; //定位读取器
-				}
-			}
-		}
-		void setReadCB(const function<void(const T &)> &cb) {
-			lock_guard<mutex> lck(_mtxCB);
-			_readCB = cb;
-			reset();
-		}
-		void setDetachCB(const function<void()> &cb) {
-			lock_guard<mutex> lck(_mtxCB);
-			if (!cb) {
-				_detachCB = []() {};
-			} else {
-				_detachCB = cb;
-			}
-		}
-        
-        const T* read(){
-            auto strongBuffer=_buffer.lock();
-            if(!strongBuffer){
-                return nullptr;
+    _RingReader(const std::shared_ptr<_RingStorage<T> > &storage,bool useBuffer) {
+        _storage = storage;
+        _useBuffer = useBuffer;
+        resetPos(true);
+    }
+
+    ~_RingReader() {}
+
+    void setReadCB(const function<void(const T &)> &cb) {
+        if (!cb) {
+            _readCB = [](const T &) {};
+        } else {
+            _readCB = cb;
+        }
+        resetPos(true);
+    }
+
+    void setDetachCB(const function<void()> &cb) {
+        if (!cb) {
+            _detachCB = []() {};
+        } else {
+            _detachCB = cb;
+        }
+    }
+
+    //重新定位至最新的数据位置
+    void resetPos(bool key = true) {
+        _storageInternal = _storage->getStorageInternal();
+        _curpos = _storageInternal->getPos(key);
+    }
+private:
+    void onRead(const T &data,int targetPos) {
+        if(!_useBuffer){
+            _readCB(data);
+        }else{
+            const T *pkt  = nullptr;
+            while((pkt = read(targetPos))){
+                _readCB(*pkt);
             }
-            return read(strongBuffer.get());
         }
-        
-	private:
-		void onRead(const T &data) {
-			lock_guard<mutex> lck(_mtxCB);
-			if(!_readCB){
-				return;
-			}
+    }
 
-			if(!_useBuffer){
-				_readCB(data);
-			}else{
-				const T *pkt  = nullptr;
-				while((pkt = read())){
-					_readCB(*pkt);
-				}
-			}
-		}
-		void onDetach() const {
-			lock_guard<mutex> lck(_mtxCB);
-			_detachCB();
-		}
-		//读环形缓冲
-		const T *read(RingBuffer *ring) {
-			if (_curpos == ring->_ringPos) {
-				return nullptr;
-			}
-			const T *data = &(ring->_dataRing[_curpos]); //返回包
-			_curpos = ring->next(_curpos); //更新位置
-			return data;
-		}
+    void onDetach() const {
+        _detachCB();
+    }
 
-	private:
-		function<void(const T &)> _readCB ;
-		function<void(void)> _detachCB = []() {};
-		weak_ptr<RingBuffer> _buffer;
-		mutable mutex _mtxCB;
-		int _curpos;
-		bool _useBuffer;
-	};
-
-	friend class RingReader;
-	RingBuffer(int size = 0) {
-        if(size <= 0){
-            size = 32;
-            _canReSize = true;
+    const T* read(int targetPos){
+        while (_curpos != targetPos){
+            const T *data = (*_storageInternal)[_curpos]; //返回包
+            _curpos = _storageInternal->next(_curpos); //更新位置
+            if(!data){
+                continue;
+            }
+            return data;
         }
-		_ringSize = size;
-		_dataRing = new T[_ringSize];
-		_ringPos = 0;
-		_ringKeyPos = 0;
-	}
-	~RingBuffer() {
-		decltype(_readerMap) mapCopy;
-		{
-			lock_guard<mutex> lck(_mtx_reader);
-			mapCopy.swap(_readerMap);
-		}
-		for (auto &pr : mapCopy) {
-			auto reader = pr.second.lock();
-			if(reader){
-				reader->onDetach();
-			}
-		}
-		delete[] _dataRing;
-	}
-#if defined(ENABLE_RING_USEBUF)
-	std::shared_ptr<RingReader> attach(bool useBuffer = true) {
-#else //ENABLE_RING_USEBUF
-	std::shared_ptr<RingReader> attach(bool useBuffer = false) {
-#endif //ENABLE_RING_USEBUF
+        return nullptr;
+    }
+private:
+    function<void(const T &)> _readCB = [](const T &) {};
+    function<void(void)> _detachCB = []() {};
 
-		std::shared_ptr<RingReader> ptr = std::make_shared<RingReader>(this->shared_from_this(),useBuffer);
-		std::weak_ptr<RingReader> weakPtr = ptr;
-		lock_guard<mutex> lck(_mtx_reader);
-		_readerMap.emplace(ptr.get(),weakPtr);
-		return ptr;
-	}
-	//写环形缓冲，非线程安全的
-	void write(const T &in,bool isKey = true) {
-		{
-			lock_guard<mutex> lck(_mtx_delegate);
-			if (_delegate) {
-				_delegate->onWrite(in, isKey);
-			}
-		}
-		computeBestSize(isKey);
-        _dataRing[_ringPos] = in;
-        if (isKey) {
+    shared_ptr<_RingStorageInternal<T> > _storageInternal;
+    shared_ptr<_RingStorage<T> > _storage;
+    int _curpos;
+    bool _useBuffer;
+};
+
+template<typename T>
+class _RingStorageInternal{
+public:
+    typedef std::shared_ptr<_RingStorageInternal> Ptr;
+    _RingStorageInternal(int size){
+        _dataRing.resize(size);
+        _ringSize = size;
+        _ringKeyPos = size;
+        _ringPos = 0;
+    }
+
+    ~_RingStorageInternal(){}
+
+
+    /**
+     * 写入环形缓存数据
+     * @param in 数据
+     * @param isKey 是否为关键帧
+     * @return 是否触发重置环形缓存大小
+     */
+    inline void write(const T &in,bool key = true) {
+        _dataRing[_ringPos].second = in;
+        _dataRing[_ringPos].first = true;
+        if (key) {
             _ringKeyPos = _ringPos; //设置读取器可以定位的点
         }
         _ringPos = next(_ringPos);
+    }
 
-        lock_guard<mutex> lck(_mtx_reader);
-		for (auto it = _readerMap.begin() ; it != _readerMap.end() ;) {
-			auto reader = it->second.lock();
-			if(reader){
-				reader->onRead(in);
-				++it;
-			}else{
-				it = _readerMap.erase(it);
-			}
-		}
-	}
-	int readerCount(){
-		lock_guard<mutex> lck(_mtx_reader);
-		return _readerMap.size();
-	}
-	void setDelegate(const typename RingDelegate<T>::Ptr &delegate){
-		lock_guard<mutex> lck(_mtx_delegate);
-		_delegate = delegate;
-	}
+    inline int getPos(bool key){
+        if(!key){
+            //不是定位关键帧，那么返回当前位置即可
+            return _ringPos;
+        }
+        //定位关键帧
+        if(_ringKeyPos != _ringSize){
+            //环线缓存中存在关键帧，返回之
+            return _ringKeyPos;
+        }
+
+        //不存在关键帧，返回当前帧下一帧，目的是环形缓存中的缓存全部一次性输出
+        return next(next(_ringPos));
+    }
+
+    inline int next(int pos) {
+        //读取器下一位置
+        if (pos > _ringSize - 2) {
+            return 0;
+        } else {
+            return pos + 1;
+        }
+    }
+
+    inline T* operator[](int pos){
+        auto &ref = _dataRing[pos];
+        if(!ref.first){
+            return nullptr;
+        }
+        return &ref.second;
+    }
 private:
-	T *_dataRing;
-	int _ringPos;
-	int _ringKeyPos;
-	int _ringSize;
-	//计算最佳环形缓存大小的参数
-	int _besetSize = 0;
-	int _totalCnt = 0;
-	int _lastKeyCnt = 0;
-    bool _canReSize = false;
-	typename RingDelegate<T>::Ptr _delegate;
-	mutex _mtx_delegate;
-	mutex _mtx_reader;
-	unordered_map<void *,std::weak_ptr<RingReader> > _readerMap;
-
+    class DataPair : public std::pair<bool,T>{
+    public:
+        DataPair() : std::pair<bool,T>(false,T()) {}
+        ~DataPair() = default;
+    };
 private:
-	inline int next(int pos) {
-		//读取器下一位置
-		if (pos > _ringSize - 2) {
-			return 0;
-		} else {
-			return pos + 1;
-		}
-	}
-
-	void release(RingReader *reader) {
-		if(_mtx_reader.try_lock()){
-			_readerMap.erase(reader);
-			_mtx_reader.unlock();
-		}
-	}
-	void computeBestSize(bool isKey){
-        if(!_canReSize || _besetSize){
-			return;
-		}
-		_totalCnt++;
-		if(!isKey){
-			return;
-		}
-		//关键帧
-		if(_lastKeyCnt){
-			//计算两个I帧之间的包个数
-			_besetSize = _totalCnt - _lastKeyCnt;
-			if(_besetSize < 32){
-				_besetSize = 32;
-			}
-			if(_besetSize > 512){
-				_besetSize = 512;
-			}
-			reSize();
-			return;
-		}
-		_lastKeyCnt = _totalCnt;
-	}
-	void reSize(){
-		_ringSize = _besetSize;
-		delete [] _dataRing;
-		_dataRing = new T[_ringSize];
-		_ringPos = 0;
-		_ringKeyPos = 0;
-
-		lock_guard<mutex> lck(_mtx_reader);
-		for (auto &pr : _readerMap) {
-			auto reader = pr.second.lock();
-			if(reader){
-				reader->reset(true);
-			}
-		}
-
-	}
+    vector<DataPair> _dataRing;
+    int _ringPos;
+    int _ringKeyPos;
+    int _ringSize;
 };
 
-} /* namespace toolkit */
+template<typename T>
+class _RingStorage{
+public:
+    typedef std::shared_ptr<_RingStorage> Ptr;
+
+    _RingStorage(int size = 0){
+        if(size <= 0){
+            size = RING_MIN_SIZE;
+            _canReSize = true;
+        }
+        _storageInternal = std::make_shared< _RingStorageInternal<T> >(size);
+    }
+
+    ~_RingStorage(){}
+
+    void setDelegate(const typename RingDelegate<T>::Ptr &delegate){
+        LOCK_GUARD(_mtx_delegate);
+        _delegate = delegate;
+    }
+
+    /**
+     * 写入环形缓存数据
+     * @param in 数据
+     * @param isKey 是否为关键帧
+     * @return 是否触发重置环形缓存大小
+     */
+    bool write(const T &in,bool isKey = true) {
+        {
+            LOCK_GUARD(_mtx_delegate);
+            if (_delegate) {
+                _delegate->onWrite(in, isKey);
+            }
+        }
+        auto flag = computeGopSize(isKey);
+        _storageInternal->write(in,isKey);
+        return flag;
+    }
+
+    typename _RingStorageInternal<T>::Ptr getStorageInternal(){
+        LOCK_GUARD(_mtx_storage);
+        return _storageInternal;
+    }
+
+    inline int getPos(bool key){
+        return _storageInternal->getPos(key);
+    }
+private:
+    bool computeGopSize(bool isKey){
+        if(!_canReSize || _besetSize){
+            return false;
+        }
+        _totalCnt++;
+        if(!isKey){
+            return false;
+        }
+        //关键帧
+        if(!_lastKeyCnt){
+            //第一次获取关键帧
+            _lastKeyCnt = _totalCnt;
+            return false;
+        }
+
+        //第二次获取关键帧，计算两个I帧之间的包个数
+        _besetSize = _totalCnt - _lastKeyCnt;
+        if(_besetSize < RING_MIN_SIZE){
+            _besetSize = RING_MIN_SIZE;
+        }
+        if(_besetSize > RING_MAX_SIZE){
+            _besetSize = RING_MAX_SIZE;
+        }
+        LOCK_GUARD(_mtx_storage);
+        _storageInternal = std::make_shared< _RingStorageInternal<T> >(_besetSize);
+        return true;
+    }
+private:
+    mutex _mtx_storage;
+    typename _RingStorageInternal<T>::Ptr _storageInternal;
+    //代理
+    typename RingDelegate<T>::Ptr _delegate;
+    mutex _mtx_delegate;
+    //计算最佳环形缓存大小的参数
+    int _besetSize = 0;
+    int _totalCnt = 0;
+    int _lastKeyCnt = 0;
+    bool _canReSize = false;
+};
+
+template<typename T>
+class RingBuffer;
+
+/**
+ * 环形缓存事件派发器，只能一个poller线程操作它
+ * @tparam T
+ */
+template<typename T>
+class _RingReaderDispatcher: public enable_shared_from_this<_RingReaderDispatcher<T> > {
+public:
+	typedef std::shared_ptr<_RingReaderDispatcher> Ptr;
+    typedef _RingReader<T> RingReader;
+    typedef _RingStorage<T> RingStorage;
+    friend class RingBuffer<T>;
+
+	~_RingReaderDispatcher() {
+        decltype(_readerMap) mapCopy;
+        mapCopy.swap(_readerMap);
+        for (auto &pr : mapCopy) {
+            auto reader = pr.second.lock();
+            if(reader){
+                reader->onDetach();
+            }
+        }
+	}
+
+private:
+    _RingReaderDispatcher(const typename RingStorage::Ptr &storage,const function<void(int,bool) > &onSizeChanged ) {
+        _storage = storage;
+        _readerSize = 0;
+        _onSizeChanged = onSizeChanged;
+    }
+
+    void emitRead(const T &in,int targetPos){
+        for (auto it = _readerMap.begin() ; it != _readerMap.end() ;) {
+            auto reader = it->second.lock();
+            if(!reader){
+                it = _readerMap.erase(it);
+                --_readerSize;
+                onSizeChanged(false);
+                continue;
+            }
+            reader->onRead(in,targetPos);
+            ++it;
+        }
+	}
+
+    void resetPos(bool key = true)  {
+        for (auto it = _readerMap.begin() ; it != _readerMap.end() ;) {
+            auto reader = it->second.lock();
+            if(!reader){
+                it = _readerMap.erase(it);
+                --_readerSize;
+                onSizeChanged(false);
+                continue;
+            }
+            reader->resetPos(key);
+            ++it;
+        }
+    }
+
+    std::shared_ptr<RingReader> attach(const EventPoller::Ptr &poller,bool useBuffer) {
+	    if(!poller->isCurrentThread()){
+	        throw std::runtime_error("必须在绑定的poller线程中执行attach操作");
+	    }
+
+        weak_ptr<_RingReaderDispatcher> weakSelf = this->shared_from_this();
+	    auto onDealloc = [weakSelf,poller](RingReader *ptr){
+            poller->async([weakSelf,ptr](){
+                auto strongSelf = weakSelf.lock();
+                if(strongSelf && strongSelf->_readerMap.erase(ptr)){
+                    --strongSelf->_readerSize;
+                    strongSelf->onSizeChanged(false);
+                }
+                delete ptr;
+            });
+	    };
+
+        std::shared_ptr<RingReader> reader(new RingReader(_storage,useBuffer),onDealloc);
+        _readerMap[reader.get()] = std::move(reader);
+        ++ _readerSize;
+        onSizeChanged(true);
+        return reader;
+    }
+
+    int readerCount(){
+        return _readerSize;
+	}
+
+    void onSizeChanged(bool add_flag){
+        _onSizeChanged(_readerSize,add_flag);
+	}
+private:
+    function<void(int,bool) > _onSizeChanged;
+    atomic_int _readerSize;
+    typename RingStorage::Ptr _storage;
+    unordered_map<void *,std::weak_ptr<RingReader> > _readerMap;
+};
+
+template<typename T>
+class RingBuffer :  public enable_shared_from_this<RingBuffer<T> > {
+public:
+    typedef std::shared_ptr<RingBuffer> Ptr;
+    typedef _RingReader<T> RingReader;
+    typedef _RingStorage<T> RingStorage;
+    typedef _RingReaderDispatcher<T> RingReaderDispatcher;
+    typedef function<void(const EventPoller::Ptr &poller,int size,bool add_flag)> onReaderChanged;
+
+    RingBuffer(int size = 0,const onReaderChanged &cb = nullptr) {
+        _storage = std::make_shared<RingStorage>(size);
+        _onReaderChanged = cb;
+    }
+
+    ~RingBuffer() {}
+
+    void write(const T &in, bool isKey = true) {
+        if (_storage->write(in, isKey)) {
+            resetPos();
+        }
+        emitRead(in,_storage->getPos(false));
+    }
+
+    void setDelegate(const typename RingDelegate<T>::Ptr &delegate) {
+        _storage->setDelegate(delegate);
+    }
+
+    std::shared_ptr<RingReader> attach(const EventPoller::Ptr &poller, bool useBuffer = true) {
+        typename RingReaderDispatcher::Ptr dispatcher;
+        {
+            LOCK_GUARD(_mtx_map);
+            auto &ref = _dispatcherMap[poller];
+            if (!ref) {
+                weak_ptr<RingBuffer> weakSelf = this->shared_from_this();
+                auto onSizeChanged = [weakSelf,poller](int size,bool add_flag){
+                    auto strongSelf = weakSelf.lock();
+                    if(!strongSelf){
+                        return;
+                    }
+                    strongSelf->onSizeChanged(poller,size,add_flag);
+                };
+
+                auto onDealloc = [poller](RingReaderDispatcher *ptr){
+                    poller->async([ptr](){
+                        delete ptr;
+                    });
+                };
+                ref.reset(new RingReaderDispatcher(_storage,std::move(onSizeChanged)),std::move(onDealloc));
+            }
+            dispatcher = ref;
+        }
+
+        return dispatcher->attach(poller,useBuffer);
+    }
+
+    int readerCount() {
+        LOCK_GUARD(_mtx_map);
+        int total = 0;
+        for (auto &pr : _dispatcherMap){
+            total += pr.second->readerCount();
+        }
+        return total;
+    }
+private:
+    void resetPos(bool key = true ) {
+        LOCK_GUARD(_mtx_map);
+        for (auto &pr : _dispatcherMap) {
+            auto second = pr.second;
+            pr.first->async([second,key](){
+                second->resetPos(key);
+            },false);
+        }
+    }
+    void emitRead(const T &in,int targetPos){
+        LOCK_GUARD(_mtx_map);
+        for (auto &pr : _dispatcherMap) {
+            auto second = pr.second;
+            pr.first->async([second,in,targetPos](){
+                second->emitRead(in,targetPos);
+            },false);
+        }
+    }
+    void onSizeChanged(const EventPoller::Ptr &poller,int size,bool add_flag){
+        if(size == 0){
+            LOCK_GUARD(_mtx_map);
+            _dispatcherMap.erase(poller);
+        }
+
+        if(_onReaderChanged){
+            _onReaderChanged(poller,size,add_flag);
+        }
+    }
+private:
+    struct HashOfPtr {
+        std::size_t operator()(const EventPoller::Ptr &key) const
+        {
+            return (uint64_t)key.get();
+        }
+    };
+private:
+    mutex _mtx_map;
+    typename RingStorage::Ptr _storage;
+    onReaderChanged _onReaderChanged;
+    unordered_map<EventPoller::Ptr,typename RingReaderDispatcher::Ptr,HashOfPtr > _dispatcherMap;
+};
+
+}; /* namespace toolkit */
 
 #endif /* UTIL_RINGBUFFER_H_ */

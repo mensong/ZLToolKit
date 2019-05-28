@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,10 +25,11 @@
 #ifndef SRC_POLLER_SELECTWRAP_H_
 #define SRC_POLLER_SELECTWRAP_H_
 
+#include "Util/util.h"
+
 namespace toolkit {
 
-class FdSet
-{
+class FdSet {
 public:
 	FdSet();
 	~FdSet();
@@ -37,13 +38,10 @@ public:
 	void fdClr(int fd);
 	bool isSet(int fd);
 	void *_ptr;
-private:
 };
+int zl_select(int cnt,FdSet *read,FdSet *write,FdSet *err,struct timeval *tv);
 
 } /* namespace toolkit */
-
-using namespace toolkit;
-int zl_select(int cnt,FdSet *read,FdSet *write,FdSet *err,struct timeval *tv);
 
 
 

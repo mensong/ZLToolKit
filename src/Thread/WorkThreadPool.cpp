@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,10 +33,18 @@ namespace toolkit {
 
 INSTANCE_IMP(WorkThreadPool);
 
-WorkThreadPool::WorkThreadPool(): TaskExecutorGetterImp([](){
-	return std::make_shared<ThreadPool>( 1,ThreadPool::PRIORITY_HIGHEST, true);
-}){}
+EventPoller::Ptr WorkThreadPool::getPoller(){
+	return dynamic_pointer_cast<EventPoller>(getExecutor());
+}
 
-
+WorkThreadPool::WorkThreadPool(){
+	//创建当前cpu核心个数优先级最低的线程，目的是做些无关紧要的阻塞式任务，例如dns解析，文件io等
+	createThreads([](){
+		EventPoller::Ptr ret(new EventPoller(ThreadPool::PRIORITY_LOWEST));
+		ret->runLoop(false);
+		return ret;
+	},thread::hardware_concurrency());
+}
+	
 } /* namespace toolkit */
 

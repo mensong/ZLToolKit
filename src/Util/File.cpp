@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -235,6 +235,29 @@ void File::delete_file(const char *path) {
 		return;
 	}
 	_unlink(path);
+}
+
+string File::loadFile(const char *path) {
+	FILE *fp = fopen(path,"rb");
+	if(!fp){
+		return "";
+	}
+	fseek(fp,0,SEEK_END);
+	auto len = ftell(fp);
+	fseek(fp,0,SEEK_SET);
+	string str(len,'\0');
+	fread((char *)str.data(),str.size(),1,fp);
+	return str;
+}
+
+bool File::saveFile(const string &data, const char *path) {
+	FILE *fp = fopen(path,"wb");
+	if(!fp){
+		return false;
+	}
+	fwrite(data.data(),data.size(),1,fp);
+	fclose(fp);
+	return true;
 }
 
 } /* namespace toolkit */

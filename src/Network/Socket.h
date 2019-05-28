@@ -1,7 +1,7 @@
-﻿/*
+/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,6 +41,7 @@
 #include "Poller/Timer.h"
 #include "Poller/EventPoller.h"
 #include "Network/sockutil.h"
+#include "Buffer.h"
 
 using namespace std;
 
@@ -70,9 +71,6 @@ namespace toolkit {
 //发送超时时间，如果在规定时间内一直没有发送数据成功，那么将触发onErr事件
 #define SEND_TIME_OUT_SEC 10
     
-//缓存列队中数据最大保存秒数,默认最大保存5秒的数据
-#define SEND_BUF_MAX_SEC 5
-
 //错误类型枚举
 typedef enum {
 	Err_success = 0, //成功
@@ -126,6 +124,51 @@ private:
     int _customCode = 0;
 };
 
+
+class SockNum{
+public:
+    typedef enum {
+        Sock_TCP = 0,
+        Sock_UDP = 1
+    } SockType;
+
+    typedef std::shared_ptr<SockNum> Ptr;
+    SockNum(int fd,SockType type){
+        _fd = fd;
+        _type = type;
+    }
+    ~SockNum(){
+#if defined (OS_IPHONE)
+        unsetSocketOfIOS(_fd);
+#endif //OS_IPHONE
+        ::shutdown(_fd, SHUT_RDWR);
+        close(_fd);
+    }
+
+    int rawFd() const{
+        return _fd;
+    }
+
+    SockType type(){
+        return _type;
+    }
+
+    void setConnected(){
+#if defined (OS_IPHONE)
+        setSocketOfIOS(_fd);
+#endif //OS_IPHONE
+    }
+private:
+    SockType _type;
+    int _fd;
+#if defined (OS_IPHONE)
+    void *readStream=NULL;
+    void *writeStream=NULL;
+    bool setSocketOfIOS(int socket);
+    void unsetSocketOfIOS(int socket);
+#endif //OS_IPHONE
+};
+
 //socket 文件描述符的包装
 //在析构时自动溢出监听并close套接字
 //防止描述符溢出
@@ -133,181 +176,69 @@ class SockFD : public noncopyable
 {
 public:
 	typedef std::shared_ptr<SockFD> Ptr;
-	SockFD(int sock,const EventPoller::Ptr &poller){
-		_sock = sock;
+	/**
+	 * 创建一个fd对象
+	 * @param num 文件描述符，int数字
+	 * @param poller 事件监听器
+	 */
+	SockFD(int num,SockNum::SockType type,const EventPoller::Ptr &poller){
+        _num = std::make_shared<SockNum>(num,type);
         _poller = poller;
 	}
+
+	/**
+	 * 复制一个fd对象
+	 * @param that 源对象
+	 * @param poller 事件监听器
+	 */
+    SockFD(const SockFD &that,const EventPoller::Ptr &poller){
+        _num = that._num;
+        _poller = poller;
+        if(_poller == that._poller){
+            throw invalid_argument("copy a SockFD with same poller!");
+        }
+    }
+
 	~SockFD(){
-        ::shutdown(_sock, SHUT_RDWR);
-#if defined (OS_IPHONE)
-        unsetSocketOfIOS(_sock);
-#endif //OS_IPHONE
-        int fd =  _sock;
-        _poller->delEvent(fd,[fd](bool){
-            close(fd);
-        });
+	    auto num = _num;
+        _poller->delEvent(_num->rawFd(),[num](bool){});
 	}
 	void setConnected(){
-#if defined (OS_IPHONE)
-		setSocketOfIOS(_sock);
-#endif //OS_IPHONE
+        _num->setConnected();
 	}
 	int rawFd() const{
-		return _sock;
+		return _num->rawFd();
 	}
+    SockNum::SockType type(){
+        return _num->type();
+    }
 private:
-	int _sock;
+    SockNum::Ptr _num;
     EventPoller::Ptr _poller;
-#if defined (OS_IPHONE)
-	void *readStream=NULL;
-	void *writeStream=NULL;
-	bool setSocketOfIOS(int socket);
-	void unsetSocketOfIOS(int socket);
-#endif //OS_IPHONE
 };
 
-//缓存基类
-class Buffer : public noncopyable {
-public:
-    typedef std::shared_ptr<Buffer> Ptr;
-    Buffer(){};
-    virtual ~Buffer(){};
-    //返回数据长度
-    virtual char *data() const = 0 ;
-    virtual uint32_t size() const = 0;
-};
 
-//指针式缓存对象，
-class BufferRaw : public Buffer{
+template <class Mtx = recursive_mutex>
+class MutexWrapper {
 public:
-    typedef std::shared_ptr<BufferRaw> Ptr;
-    BufferRaw(uint32_t capacity = 0) {
-        if(capacity){
-            setCapacity(capacity);
+    MutexWrapper(bool enable){
+        _enable = enable;
+    }
+    ~MutexWrapper(){}
+
+    inline void lock(){
+        if(_enable){
+            _mtx.lock();
         }
     }
-    ~BufferRaw() {
-        if(_data){
-            delete [] _data;
+    inline void unlock(){
+        if(_enable){
+            _mtx.unlock();
         }
-    }
-    //在写入数据时请确保内存是否越界
-    char *data() const override {
-        return _data;
-    }
-    //有效数据大小
-    uint32_t size() const override{
-        return _size;
-    }
-    //分配内存大小
-    void setCapacity(uint32_t capacity){
-        if(_data){
-            delete [] _data;
-        }
-        _data = new char[capacity];
-        _capacity = capacity;
-    }
-    //设置有效数据大小
-    void setSize(uint32_t size){
-        if(size > _capacity){
-            throw std::invalid_argument("Buffer::setSize out of range");
-        }
-        _size = size;
-    }
-    //赋值数据
-    void assign(const char *data,int size = 0){
-        if(size <=0 ){
-            size = strlen(data);
-        }
-        setCapacity(size + 1);
-        memcpy(_data,data,size);
-        _data[size] = '\0';
-        setSize(size);
     }
 private:
-    char *_data = nullptr;
-    int _capacity = 0;
-    int _size = 0;
-};
-
-class Packet : public noncopyable
-{
-public:
-    typedef std::shared_ptr<Packet> Ptr;
-    Packet(){}
-    ~Packet(){  if(_addr) delete _addr;  }
-
-    void updateStamp();
-    uint32_t getStamp() const;
-    void setAddr(const struct sockaddr *addr);
-    void setFlag(int flag){ _flag = flag; }
-    void setData(const Buffer::Ptr &data){
-        _data = data;
-        _offset = 0;
-    }
-    int send(int fd);
-
-    bool empty() const{
-        if(!_data){
-            return true;
-        }
-        return _offset >= _data->size();
-    }
-private:
-    struct sockaddr *_addr = nullptr;
-    Buffer::Ptr _data;
-    int _flag = 0;
-    int _offset = 0;
-    uint32_t _stamp = 0;
-};
-
-//字符串缓存
-class BufferString : public  Buffer {
-public:
-    typedef std::shared_ptr<BufferString> Ptr;
-    BufferString(const string &data):_data(data) {}
-    BufferString(string &&data):_data(std::move(data)){}
-    ~BufferString() {}
-    char *data() const override {
-        return const_cast<char *>(_data.data());
-    }
-    uint32_t size() const override{
-        return _data.size();
-    }
-private:
-    string _data;
-};
-
-template <typename FUN>
-class SafeFunction{
-public:
-    SafeFunction(){
-        _fun.reset(new FUN(nullptr));
-    }
-    SafeFunction(const FUN &fun){
-        _fun.reset(new FUN(fun));
-    }
-    template<typename ...ArgsType>
-    inline typename FUN::result_type operator()(ArgsType &&...args){
-        std::shared_ptr<FUN> fun;
-        {
-            lock_guard<mutex> lck(_mtx);
-            fun = _fun;
-        }
-        return (*fun)(std::forward<ArgsType>(args)...);
-    }
-
-    inline void operator = (const FUN &fun){
-        lock_guard<mutex> lck(_mtx);
-        _fun.reset(new FUN(fun));
-    }
-    inline operator bool(){
-        lock_guard<mutex> lck(_mtx);
-        return _fun->operator bool();
-    }
-private:
-    std::shared_ptr<FUN> _fun;
-    mutex _mtx;
+    bool _enable;
+    Mtx _mtx;
 };
 
 //异步IO套接字对象，线程安全的
@@ -325,10 +256,9 @@ public:
     //譬如http文件下载服务器，返回false则移除回调监听
     typedef function<bool()> onFlush;
     //在接收到连接请求前，拦截Socket默认生成方式
-    typedef function<Ptr(const EventPoller::Ptr &poller,const TaskExecutor::Ptr &executor)> onBeforeAcceptCB;
+    typedef function<Ptr(const EventPoller::Ptr &poller)> onBeforeAcceptCB;
 
-    Socket(const EventPoller::Ptr &poller = nullptr,
-           const TaskExecutor::Ptr &executor = nullptr);
+    Socket(const EventPoller::Ptr &poller = nullptr,bool enableMutex = true);
 	~Socket();
 
     //创建tcp客户端，url可以是ip或域名
@@ -348,20 +278,20 @@ public:
     //socket缓存发送完毕回调，通过这个回调可以以最大网速的方式发送数据
     //譬如http文件下载服务器，返回false则移除回调监听
 	void setOnFlush(const onFlush &cb);
-
-	//设置Socket生成拦截器
+    //设置Socket生成拦截器
     void setOnBeforeAccept(const onBeforeAcceptCB &cb);
 
     ////////////线程安全的数据发送，udp套接字请传入peerAddr，否则置空////////////
     //发送裸指针数据，内部会把数据拷贝至内部缓存列队，如果要避免数据拷贝，可以调用send(const Buffer::Ptr &buf...）接口
     //返回值:-1代表该socket已经不可用；0代表缓存列队已满，并未产生实质操作(在关闭主动丢包时有效)；否则返回数据长度
-    int send(const char *buf, int size = 0,int flags = SOCKET_DEFAULE_FLAGS,struct sockaddr *peerAddr = nullptr);
-	int send(const string &buf,int flags = SOCKET_DEFAULE_FLAGS,struct sockaddr *peerAddr = nullptr);
-	int send(string &&buf,int flags = SOCKET_DEFAULE_FLAGS,struct sockaddr *peerAddr = nullptr);
-	int send(const Buffer::Ptr &buf,int flags = SOCKET_DEFAULE_FLAGS , struct sockaddr *peerAddr = nullptr);
+    int send(const char *buf, int size = 0);
+	int send(const string &buf);
+	int send(string &&buf);
+	int send(const Buffer::Ptr &buf);
+	int send(List<Buffer::Ptr> &buf);
 
     //关闭socket且触发onErr回调，onErr回调将在主线程中进行
-	bool emitErr(const SockException &err,bool closeSock = true,bool maySync = true);
+	bool emitErr(const SockException &err);
     //关闭或开启数据接收
 	void enableRecv(bool enabled);
     //获取裸文件描述符，请勿进行close操作(因为Socket对象会管理其生命周期)
@@ -375,11 +305,6 @@ public:
     //获取对方端口号
 	uint16_t get_peer_port();
 
-    //设置缓存列队长度
-    //譬如调用Socket::send若干次，那么这些数据可能并不会真正发送到网络
-    //而是会缓存在Socket对象的缓存列队中
-    //如果缓存列队中最老的数据包寿命超过最大限制，那么调用Socket::send将返回0
-	void setSendBufSecond(uint32_t second);
     //设置发送超时主动断开时间;默认10秒
     void setSendTimeOutSecond(uint32_t second);
     //获取一片缓存
@@ -388,48 +313,71 @@ public:
     //套接字是否忙，如果套接字写缓存已满则返回true
     bool isSocketBusy() const;
 
-    const TaskExecutor::Ptr &getExecutor() const;
+    //获取poller对象
     const EventPoller::Ptr &getPoller() const;
-private:
+
+    //从另外一个Socket克隆
+    //目的是一个socket可以被多个poller对象监听，提高性能
+    bool cloneFromListenSocket(const Socket &other);
+
+    //设置UDP发送数据时的对端地址
+    bool setSendPeerAddr(const struct sockaddr *peerAddr);
+    //设置发送flags
+    void setSendFlags(int flags);
+
+    /**
+     * 设置接收缓存
+     * @param readBuffer 接收缓存
+     */
+    void setReadBuffer(const BufferRaw::Ptr &readBuffer);
+
+    /**
+     * 关闭套接字
+     */
     void closeSock();
+private:
     SockFD::Ptr setPeerSock(int fd);
 	bool attachEvent(const SockFD::Ptr &pSock,bool isUdp = false);
     int onAccept(const SockFD::Ptr &pSock,int event);
-    int onRead(const SockFD::Ptr &pSock,bool mayEof=true);
+    int onRead(const SockFD::Ptr &pSock,bool isUdp = false);
     void onError(const SockFD::Ptr &pSock);
     void onWriteAble(const SockFD::Ptr &pSock);
-    bool sendData(const SockFD::Ptr &pSock, bool bMainThread);
     void onConnected(const SockFD::Ptr &pSock, const onErrCB &connectCB);
 	void onFlushed(const SockFD::Ptr &pSock);
     void startWriteAbleEvent(const SockFD::Ptr &pSock);
     void stopWriteAbleEvent(const SockFD::Ptr &pSock);
-    bool sendTimeout();
-    SockFD::Ptr makeSock(int sock);
-    uint32_t getBufSecondLength();
+    SockFD::Ptr makeSock(int sock,SockNum::SockType type);
     static SockException getSockErr(const SockFD::Ptr &pSock,bool tryErrno=true);
+    bool listen(const SockFD::Ptr &fd);
+    bool flushData(const SockFD::Ptr &pSock,bool bPollerThread);
+    bool send_l();
 private:
-    mutable mutex _mtx_sockFd;
     EventPoller::Ptr _poller;
-    TaskExecutor::Ptr _executor;
-    SockFD::Ptr _sockFd;
-    recursive_mutex _mtx_sendBuf;
-    deque<Packet::Ptr> _sendPktBuf;
-    /////////////////////
     std::shared_ptr<Timer> _conTimer;
-    SafeFunction<onReadCB> _readCB;
-    SafeFunction<onErrCB> _errCB;
-    SafeFunction<onAcceptCB> _acceptCB;
-    SafeFunction<onFlush> _flushCB;
-    SafeFunction<onBeforeAcceptCB> _beforeAcceptCB;
-    Ticker _flushTicker;
+    SockFD::Ptr _sockFd;
+    mutable MutexWrapper<recursive_mutex> _mtx_sockFd;
+    /////////////////////
+    MutexWrapper<recursive_mutex> _mtx_bufferWaiting;
+    List<Buffer::Ptr> _bufferWaiting;
+    MutexWrapper<recursive_mutex> _mtx_bufferSending;
+    List<BufferList::Ptr> _bufferSending;
+    /////////////////////
+    onReadCB _readCB;
+    onErrCB _errCB;
+    onAcceptCB _acceptCB;
+    onFlush _flushCB;
+    onBeforeAcceptCB _beforeAcceptCB;
+    /////////////////////
     atomic<bool> _enableRecv;
     atomic<bool> _canSendSock;
     //发送超时时间
     uint32_t _sendTimeOutSec = SEND_TIME_OUT_SEC;
-    uint32_t _sendBufSec = SEND_BUF_MAX_SEC;
+    uint32_t _lastFlushStamp = 0;
+    int _sock_flags = SOCKET_DEFAULE_FLAGS;
+    BufferRaw::Ptr _readBuffer;
 };
 
-class  SocketFlags{
+class SocketFlags{
 public:
     SocketFlags(int flags):_flags(flags){};
     ~SocketFlags(){}
@@ -443,8 +391,8 @@ public:
     virtual ~SocketHelper();
     //重新设置socket
     void setSock(const Socket::Ptr &sock);
-    void setExecutor(const TaskExecutor::Ptr &excutor);
-    TaskExecutor::Ptr getExecutor();
+    void setPoller(const EventPoller::Ptr &excutor);
+    EventPoller::Ptr getPoller();
     //设置socket flags
     SocketHelper &operator << (const SocketFlags &flags);
     //////////////////operator << 系列函数//////////////////
@@ -495,15 +443,14 @@ public:
     //套接字是否忙，如果套接字写缓存已满则返回true
     bool isSocketBusy() const;
 
-    bool async(const TaskExecutor::Task &task, bool may_sync = true);
-    bool async_first(const TaskExecutor::Task &task, bool may_sync = true);
-    bool sync(const TaskExecutor::Task &task) ;
-    bool sync_first(const TaskExecutor::Task &task);
+    bool async(TaskExecutor::Task &&task, bool may_sync = true);
+    bool async_first(TaskExecutor::Task &&task, bool may_sync = true);
+    bool sync(TaskExecutor::Task &&task) ;
+    bool sync_first(TaskExecutor::Task &&task);
 protected:
-    int _flags = SOCKET_DEFAULE_FLAGS;
     Socket::Ptr _sock;
 private:
-    TaskExecutor::Ptr _executor;
+    EventPoller::Ptr _poller;
     string _local_ip;
     uint16_t _local_port = 0;
     string _peer_ip;

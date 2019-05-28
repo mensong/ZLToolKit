@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,7 +33,6 @@
 #include "TaskExecutor.h"
 #include "Util/util.h"
 #include "Util/logger.h"
-#include "AsyncTaskThread.h"
 
 namespace toolkit {
 
@@ -56,7 +55,6 @@ public:
             start();
         }
 		_logger = Logger::Instance().shared_from_this();
-		_asyncTaskThread = AsyncTaskThread::Instance().shared_from_this();
 	}
 	~ThreadPool() {
 		shutdown();
@@ -64,23 +62,23 @@ public:
 	}
 
 	//把任务打入线程池并异步执行
-	bool async(const Task &task,bool may_sync = true) override {
+	bool async(Task &&task,bool may_sync = true) override {
 		if (may_sync && _thread_group.is_this_thread_in()) {
 			task();
 		} else {
-			_queue.push_task(task);
+			_queue.push_task(std::move(task));
 		}
 		return true;
 	}
-	bool async_first(const Task &task,bool may_sync = true) override{
+	bool async_first(Task &&task,bool may_sync = true) override{
 		if (may_sync && _thread_group.is_this_thread_in()) {
 			task();
 		} else {
-			_queue.push_task_first(task);
+			_queue.push_task_first(std::move(task));
 		}
 		return true;
 	}
-	bool sync(const Task &task) override{
+	bool sync(Task &&task) override{
 		semaphore sem;
 		bool flag = async([&](){
 			task();
@@ -91,7 +89,7 @@ public:
 		}
 		return flag;
 	}
-	bool sync_first(const Task &task) override{
+	bool sync_first(Task &&task) override{
 		semaphore sem;
 		bool flag = async_first([&]() {
 			task();
@@ -103,17 +101,9 @@ public:
 		return flag;
 	}
 
-	void wait() override{
-		_thread_group.join_all();
-	}
-
     uint64_t size(){
         return _queue.size();
     }
-
-    void shutdown() override{
-		_queue.push_exit(_thread_num);
-	}
 
 	static bool setPriority(Priority priority = PRIORITY_NORMAL,
 			thread::native_handle_type threadId = 0) {
@@ -169,9 +159,17 @@ private:
                 task();
                 task = nullptr;
             } catch (std::exception &ex) {
-				ErrorL << "catch exception:" << ex.what();
+				ErrorL << "ThreadPool执行任务捕获到异常:" << ex.what();
             }
 		}
+	}
+
+	void wait() {
+		_thread_group.join_all();
+	}
+
+	void shutdown() {
+		_queue.push_exit(_thread_num);
 	}
 private:
 	TaskQueue<TaskExecutor::Task> _queue;
@@ -179,7 +177,6 @@ private:
 	int _thread_num;
 	Priority _priority;
 	Logger::Ptr _logger;
-	AsyncTaskThread::Ptr _asyncTaskThread;
 };
 
 } /* namespace toolkit */

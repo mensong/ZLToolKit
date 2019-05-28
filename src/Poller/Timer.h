@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,7 +28,6 @@
 #include <stdio.h>
 #include <functional>
 #include "EventPoller.h"
-#include "Thread/AsyncTaskThread.h"
 
 using namespace std;
 
@@ -36,12 +35,24 @@ namespace toolkit {
 
 class Timer {
 public:
+    typedef std::shared_ptr<Timer> Ptr;
+
+    /**
+     * 构造定时器
+     * @param second 定时器重复秒数
+     * @param cb 定时器任务，返回true表示重复下次任务，否则不重复，如果任务中抛异常，则默认重复下次任务
+     * @param poller EventPoller对象，可以为nullptr
+     * @param continueWhenException 定时回调中抛异常是否继续标记
+     */
     Timer(float second,
           const function<bool()> &cb,
-          const TaskExecutor::Ptr &executor/* = nullptr*/);
+          const EventPoller::Ptr &poller /*=nullptr*/,
+          bool continueWhenException = true );
     ~Timer();
 private:
-    std::shared_ptr<bool> _canceled;
+    DelayTask::Ptr _tag;
+    //定时器保持EventPoller的强引用
+    EventPoller::Ptr _poller;
 };
 
 }  // namespace toolkit

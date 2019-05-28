@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,35 +25,27 @@
 #ifndef UTIL_WORKTHREADPOOL_H_
 #define UTIL_WORKTHREADPOOL_H_
 
-#include <map>
-#include <thread>
 #include <memory>
-#include <atomic>
-#include <iostream>
-#include <unordered_map>
 #include "ThreadPool.h"
+#include "Poller/EventPoller.h"
 
 using namespace std;
 
 namespace toolkit {
 
+
 class WorkThreadPool :
-        public std::enable_shared_from_this<WorkThreadPool> ,
-        public TaskExecutorGetterImp{
+	public std::enable_shared_from_this<WorkThreadPool> ,
+	public TaskExecutorGetterImp {
 public:
 	typedef std::shared_ptr<WorkThreadPool> Ptr;
-    ~WorkThreadPool(){};
-    static WorkThreadPool &Instance();
-
-	/**
-     * 废弃的接口，无实际操作
-     * @deprecated
-     */
-    static void Destory(){};
+	~WorkThreadPool(){};
+	static WorkThreadPool &Instance();
+	EventPoller::Ptr getPoller();
 private:
-    WorkThreadPool();
+	WorkThreadPool() ;
 };
-
+	
 } /* namespace toolkit */
 
 #endif /* UTIL_WORKTHREADPOOL_H_ */

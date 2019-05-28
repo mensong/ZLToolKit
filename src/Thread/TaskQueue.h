@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +30,7 @@
 #include <atomic>
 #include <mutex>
 #include <functional>
-#include "List.h"
+#include "Util/List.h"
 #include "semaphore.h"
 
 using namespace std;
@@ -42,17 +42,17 @@ template<typename T>
 class TaskQueue {
 public:
 	//打入任务至列队
-	void push_task(const T &task_func) {
+	void push_task(T &&task_func) {
 		{
 			lock_guard<decltype(_mutex)> lock(_mutex);
-			_queue.emplace_back(task_func);
+			_queue.emplace_back(std::move(task_func));
 		}
 		_sem.post();
 	}
-	void push_task_first(const T &task_func) {
+	void push_task_first(T &&task_func) {
 		{
             lock_guard<decltype(_mutex)> lock(_mutex);
-			_queue.emplace_front(task_func);
+			_queue.emplace_front(std::move(task_func));
 		}
 		_sem.post();
 	}

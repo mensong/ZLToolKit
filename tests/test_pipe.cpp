@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -62,8 +62,10 @@ int main() {
 		DebugL << "子进程退出" << endl;
 	} else {
 		//父进程设置退出信号处理函数
-		signal(SIGINT, [](int){EventPollerPool::Instance().shutdown();});
-		EventPollerPool::Instance().wait();
+		static semaphore sem;
+		signal(SIGINT, [](int) { sem.post(); });// 设置退出信号
+		sem.wait();
+
 		InfoL << "父进程退出" << endl;
 	}
 #endif // defined(_WIN32)

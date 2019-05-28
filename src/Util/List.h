@@ -1,7 +1,7 @@
 ﻿/*
  * MIT License
  *
- * Copyright (c) 2016 xiongziliang <771730766@qq.com>
+ * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -57,6 +57,9 @@ class List {
 public:
     typedef ListNode<T> NodeType;
     List(){}
+    List(List &&that){
+        swap(that);
+    }
     ~List(){
         clear();
     }
@@ -85,6 +88,9 @@ public:
         return _size;
     }
 
+    bool empty() const{
+        return _size == 0;
+    }
     template <class... Args>
     void emplace_front(Args&&... args){
         NodeType *node = new NodeType(std::forward<Args>(args)...);
@@ -117,6 +123,18 @@ public:
         return _front->_data;
     }
 
+    T &back() const{
+        return _back->_data;
+    }
+
+    T &operator[](uint64_t pos){
+        NodeType *front = _front ;
+        while(pos--){
+            front = front->next;
+        }
+        return front->_data;
+    }
+
     void pop_front(){
         if(!_front){
             return;
@@ -144,6 +162,23 @@ public:
         uint64_t tmp_size = _size;
         _size = other._size;
         other._size = tmp_size;
+    }
+
+    void append(List<T> &other){
+        if(other.empty()){
+            return;
+        }
+        if(_back){
+            _back->next = other._front;
+            _back = other._back;
+        }else{
+            _front = other._front;
+            _back = other._back;
+        }
+        _size += other._size;
+
+        other._front = other._back = nullptr;
+        other._size = 0;
     }
 private:
     NodeType *_front = nullptr;
