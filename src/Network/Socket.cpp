@@ -49,7 +49,7 @@ Socket::Socket(const EventPoller::Ptr &poller,bool enableMutex) :
 	}
 
     _canSendSock = true;
-	_readCB = [](const Buffer::Ptr &buf,struct sockaddr *) {
+	_readCB = [](const Buffer::Ptr &buf,struct sockaddr * , int) {
 		WarnL << "Socket not set readCB";
 	};
 	_errCB = [](const SockException &err) {
@@ -74,7 +74,7 @@ void Socket::setOnRead(const onReadCB &cb) {
 		if (cb) {
 			_readCB = cb;
 		} else {
-			_readCB = [](const Buffer::Ptr &buf,struct sockaddr *) {
+			_readCB = [](const Buffer::Ptr &buf,struct sockaddr * , int) {
 				WarnL << "Socket not set readCB";
 			};
 		}
@@ -132,57 +132,72 @@ void Socket::connect(const string &url, uint16_t port,const onErrCB &connectCB, 
     closeSock();
 
 	auto poller = _poller;
-    string strLocalIp = localIp;
     weak_ptr<Socket> weakSelf = shared_from_this();
 	//是否已经触发连接超时回调
     shared_ptr<bool> timeOuted = std::make_shared<bool>(false);
-    //DNS解析放在后台线程执行
-    WorkThreadPool::Instance().getExecutor()->async([weakSelf,poller,connectCB,timeOuted,url,port,strLocalIp,localPort](){
-		//开始发起连接服务器，要等待可写事件才表明连接服务器成功
-		int sock = SockUtil::connect(url.data(), port, true, strLocalIp.data(), localPort);
-		poller->async([weakSelf,connectCB,timeOuted,sock](){
-			auto strongSelf = weakSelf.lock();
-			if(!strongSelf || *timeOuted ){
+
+    auto asyncConnectCB = std::make_shared<function<void(int)> >([poller,weakSelf,connectCB,timeOuted](int sock){
+        poller->async([weakSelf,connectCB,timeOuted,sock](){
+            auto strongSelf = weakSelf.lock();
+            if(!strongSelf || *timeOuted ){
                 //本对象已经销毁或已经超时回调
                 if(sock != -1){
                     close(sock);
                 }
                 return;
-			}
+            }
 
-			if(sock == -1){
+            if(sock == -1){
                 //发起连接服务器失败，一般都是dns解析失败导致
                 connectCB(SockException(Err_dns, get_uv_errmsg(true)));
                 //取消超时定时器
                 strongSelf->_conTimer.reset();
                 return;
-			}
+            }
 
-			auto sockFD = strongSelf->makeSock(sock,SockNum::Sock_TCP);
+            auto sockFD = strongSelf->makeSock(sock,SockNum::Sock_TCP);
             weak_ptr<SockFD> weakSock = sockFD;
             //监听该socket是否可写，可写表明已经连接服务器成功
-			int result  = strongSelf->_poller->addEvent(sock, Event_Write, [weakSelf,weakSock,connectCB,timeOuted](int event) {
+            int result  = strongSelf->_poller->addEvent(sock, Event_Write, [weakSelf,weakSock,connectCB,timeOuted](int event) {
                 auto strongSelf = weakSelf.lock();
                 auto strongSock = weakSock.lock();
                 if(!strongSelf || !strongSock || *timeOuted) {
-                	//自己或该Socket已经被销毁或已经触发超时回调
+                    //自己或该Socket已经被销毁或已经触发超时回调
                     return;
                 }
                 //socket可写事件，说明已经连接服务器成功
                 strongSelf->onConnected(strongSock,connectCB);
-			});
-			if(result == -1){
-				WarnL << "开始Poll监听失败";
-				connectCB(SockException(Err_other,"开始Poll监听失败"));
-				strongSelf->_conTimer.reset();
-				return;
-			}
-			//保存fd
-			LOCK_GUARD(strongSelf->_mtx_sockFd);
-			strongSelf->_sockFd = sockFD;
-		});
+            });
+            if(result == -1){
+                WarnL << "开始Poll监听失败";
+                connectCB(SockException(Err_other,"开始Poll监听失败"));
+                strongSelf->_conTimer.reset();
+                return;
+            }
+            //保存fd
+            LOCK_GUARD(strongSelf->_mtx_sockFd);
+            strongSelf->_sockFd = sockFD;
+        });
+    });
+
+    weak_ptr<function<void(int)> > weakTask = asyncConnectCB;
+    _asyncConnectCB = asyncConnectCB;
+
+    //DNS解析放在后台线程执行
+    string strLocalIp = localIp;
+    WorkThreadPool::Instance().getExecutor()->async([url,port,strLocalIp,localPort,weakTask](){
+        //注释式dns解析，并且异步连接服务器
+		int sock = SockUtil::connect(url.data(), port, true, strLocalIp.data(), localPort);
+		auto strongTask = weakTask.lock();
+		if(strongTask){
+            (*strongTask)(sock);
+		} else if(sock != -1){
+		    //本次连接被取消
+		    close(sock);
+		}
 	});
 
+    //连接超时定时器
 	_conTimer = std::make_shared<Timer>(timeoutSec, [weakSelf,connectCB,timeOuted]() {
 		auto strongSelf = weakSelf.lock();
 		if(!strongSelf) {
@@ -270,7 +285,7 @@ bool Socket::attachEvent(const SockFD::Ptr &pSock,bool isUdp) {
 }
 
 void Socket::setReadBuffer(const BufferRaw::Ptr &readBuffer){
-    if(!readBuffer || readBuffer->getCapacity() < 128){
+    if(!readBuffer || readBuffer->getCapacity() < 2){
         return;
     }
     weak_ptr<Socket> weakSelf = shared_from_this();
@@ -312,7 +327,7 @@ int Socket::onRead(const SockFD::Ptr &pSock,bool isUdp) {
 		ret += nread;
         _readBuffer->data()[nread] = '\0';
         _readBuffer->setSize(nread);
-        _readCB(_readBuffer, &peerAddr);
+        _readCB(_readBuffer, &peerAddr , len);
 	}
     return 0;
 }
@@ -343,7 +358,7 @@ bool Socket::emitErr(const SockException& err) {
 }
 
 
-int Socket::send(const char* buf, int size) {
+int Socket::send(const char* buf, int size , struct sockaddr *addr, socklen_t addr_len) {
     if (size <= 0) {
         size = strlen(buf);
         if (!size) {
@@ -352,80 +367,49 @@ int Socket::send(const char* buf, int size) {
     }
     BufferRaw::Ptr ptr = obtainBuffer();
     ptr->assign(buf,size);
-    return send(ptr);
+    return send(ptr,addr,addr_len);
 }
-int Socket::send(const string &buf) {
-    return send(std::make_shared<BufferString>(buf));
-}
-
-int Socket::send(string &&buf) {
-    return send(std::make_shared<BufferString>(std::move(buf)));
+int Socket::send(const string &buf , struct sockaddr *addr, socklen_t addr_len) {
+    return send(std::make_shared<BufferString>(buf),addr,addr_len);
 }
 
-bool Socket::send_l() {
-    //数据可写入
-    if(_canSendSock){
-        //该socket可写
-		SockFD::Ptr sock;
-		{
-			LOCK_GUARD(_mtx_sockFd);
-			sock = _sockFd;
-		}
-
-		if (!sock ) {
-			//如果已断开连接或者发送超时
-			return false;
-		}
-        return flushData(sock, false);
-    }
-
-    //判断发送超时
-    if(_lastFlushStamp && time(NULL) - _lastFlushStamp > _sendTimeOutSec){
-        //如果发送列队中最老的数据距今超过超时时间限制，那么就断开socket连接
-        emitErr(SockException(Err_other, "Socket send timeout"));
-        return false;
-    }
-
-    //成功
-    return true;
+int Socket::send(string &&buf , struct sockaddr *addr, socklen_t addr_len) {
+    return send(std::make_shared<BufferString>(std::move(buf)),addr,addr_len);
 }
 
-int Socket::send(List<Buffer::Ptr> &list){
-	if(list.empty()){
-		return 0;
-	}
 
-	int total = 0;
-    list.for_each([&](const Buffer::Ptr &buf){
-        total += buf->size();
-    });
-
-    {
-		LOCK_GUARD(_mtx_bufferWaiting);
-        _bufferWaiting.append(list);
-    }
-
-    if(!send_l()){
-        return -1;
-    }
-
-	return total;
-}
-
-int Socket::send(const Buffer::Ptr &buf){
+int Socket::send(const Buffer::Ptr &buf , struct sockaddr *addr, socklen_t addr_len){
 	if(!buf || !buf->size()){
 		return 0;
 	}
 
-	{
-		LOCK_GUARD(_mtx_bufferWaiting);
-		_bufferWaiting.emplace_back(buf);
-	}
+    SockFD::Ptr sock;
+    {
+        LOCK_GUARD(_mtx_sockFd);
+        sock = _sockFd;
+    }
 
-	if(!send_l()){
-		return -1;
-	}
+    if (!sock) {
+        //如果已断开连接或者发送超时
+        return -1;
+    }
 
+    {
+        LOCK_GUARD(_mtx_bufferWaiting);
+        _bufferWaiting.emplace_back(sock->type() == SockNum::Sock_UDP ? std::make_shared<BufferSock>(buf,addr,addr_len) : buf);
+    }
+
+    if(_canSendSock){
+        //该socket可写
+        return flushData(sock, false) ?  buf->size() : -1;
+    }
+
+    //该socket不可写,判断发送超时
+    if(_lastFlushTicker.elapsedTime() > _sendTimeOutMS){
+        //如果发送列队中最老的数据距今超过超时时间限制，那么就断开socket连接
+        emitErr(SockException(Err_other, "Socket send timeout"));
+        return -1;
+    }
 	return buf->size();
 
 }
@@ -442,6 +426,7 @@ void Socket::onFlushed(const SockFD::Ptr &pSock) {
 
 void Socket::closeSock() {
 	_conTimer.reset();
+    _asyncConnectCB.reset();
 	LOCK_GUARD(_mtx_sockFd);
 	_sockFd.reset();
 }
@@ -599,7 +584,7 @@ bool Socket::flushData(const SockFD::Ptr &pSock,bool bPollerThread) {
     }
 
 	if (bufferSendingTmp.empty()) {
-		_lastFlushStamp = time(NULL);
+        _lastFlushTicker.resetTime();
 		do{
 			{
 				//_bufferSending列队中数据为空，那么我们接着消费_bufferWaiting列队中的数据
@@ -730,7 +715,7 @@ int Socket::rawFD() const{
 }
 
 void Socket::setSendTimeOutSecond(uint32_t second){
-    _sendTimeOutSec = second;
+    _sendTimeOutMS = second * 1000;
 }
 
 BufferRaw::Ptr Socket::obtainBuffer() {
@@ -899,9 +884,9 @@ BufferRaw::Ptr SocketHelper::obtainBuffer(const void *data, int len) {
 };
 
 //触发onError事件
-void SocketHelper::shutdown() {
+void SocketHelper::shutdown(const SockException &ex) {
     if (_sock) {
-        _sock->emitErr(SockException(Err_other, "self shutdown"));
+        _sock->emitErr(ex);
     }
 }
 
@@ -941,17 +926,20 @@ bool SocketHelper::isSocketBusy() const{
     return _sock->isSocketBusy();
 }
 
-bool SocketHelper::async(TaskExecutor::Task &&task, bool may_sync) {
+Task::Ptr SocketHelper::async(TaskIn &&task, bool may_sync) {
 	return _poller->async(std::move(task),may_sync);
-};
-bool SocketHelper::async_first(TaskExecutor::Task &&task, bool may_sync) {
+}
+
+Task::Ptr SocketHelper::async_first(TaskIn &&task, bool may_sync) {
 	return _poller->async_first(std::move(task),may_sync);
-};
-bool SocketHelper::sync(TaskExecutor::Task &&task) {
-	return _poller->sync(std::move(task));
-};
-bool SocketHelper::sync_first(TaskExecutor::Task &&task) {
-	return _poller->sync_first(std::move(task));
+}
+
+void SocketHelper::sync(TaskIn &&task) {
+    _poller->sync(std::move(task));
+}
+
+void SocketHelper::sync_first(TaskIn &&task) {
+    _poller->sync_first(std::move(task));
 }
 
 }  // namespace toolkit

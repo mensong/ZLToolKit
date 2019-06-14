@@ -146,6 +146,21 @@ struct msghdr {
 #define IOV_MAX 1024
 #endif
 
+class BufferList;
+class BufferSock : public Buffer{
+public:
+    typedef std::shared_ptr<BufferSock> Ptr;
+    friend class BufferList;
+    BufferSock(const Buffer::Ptr &ptr,struct sockaddr *addr = nullptr, int addr_len = 0);
+    ~BufferSock();
+    char *data() const override ;
+    uint32_t size() const override;
+private:
+    Buffer::Ptr _buffer;
+    struct sockaddr *_addr = nullptr;
+    int  _addr_len = 0;
+};
+
 class BufferList : public noncopyable {
 public:
     typedef std::shared_ptr<BufferList> Ptr;
@@ -161,7 +176,6 @@ private:
     int _iovec_off = 0;
     int _remainSize = 0;
     List<Buffer::Ptr> _pkt_list;
-
 };
 
 }//namespace toolkit

@@ -78,7 +78,8 @@ typedef enum {
 	Err_timeout, //超时
 	Err_refused,//连接别拒绝
 	Err_dns,//dns解析失败
-	Err_other,//其他错误
+	Err_shutdown,//主动关闭
+	Err_other = 0xFF,//其他错误
 } ErrCode;
 
 //错误信息类
@@ -247,7 +248,7 @@ class Socket: public std::enable_shared_from_this<Socket> ,
 public:
     typedef std::shared_ptr<Socket> Ptr;
     //接收数据回调
-    typedef function<void(const Buffer::Ptr &buf, struct sockaddr *addr)> onReadCB;
+    typedef function<void(const Buffer::Ptr &buf, struct sockaddr *addr , int addr_len)> onReadCB;
     //发生错误回调
     typedef function<void(const SockException &err)> onErrCB;
     //tcp监听接收到连接请求
@@ -284,11 +285,10 @@ public:
     ////////////线程安全的数据发送，udp套接字请传入peerAddr，否则置空////////////
     //发送裸指针数据，内部会把数据拷贝至内部缓存列队，如果要避免数据拷贝，可以调用send(const Buffer::Ptr &buf...）接口
     //返回值:-1代表该socket已经不可用；0代表缓存列队已满，并未产生实质操作(在关闭主动丢包时有效)；否则返回数据长度
-    int send(const char *buf, int size = 0);
-	int send(const string &buf);
-	int send(string &&buf);
-	int send(const Buffer::Ptr &buf);
-	int send(List<Buffer::Ptr> &buf);
+    int send(const char *buf, int size = 0,struct sockaddr *addr = nullptr, socklen_t addr_len = 0);
+	int send(const string &buf,struct sockaddr *addr = nullptr, socklen_t addr_len = 0);
+	int send(string &&buf,struct sockaddr *addr = nullptr, socklen_t addr_len = 0);
+	int send(const Buffer::Ptr &buf,struct sockaddr *addr = nullptr, socklen_t addr_len = 0);
 
     //关闭socket且触发onErr回调，onErr回调将在主线程中进行
 	bool emitErr(const SockException &err);
@@ -350,7 +350,6 @@ private:
     static SockException getSockErr(const SockFD::Ptr &pSock,bool tryErrno=true);
     bool listen(const SockFD::Ptr &fd);
     bool flushData(const SockFD::Ptr &pSock,bool bPollerThread);
-    bool send_l();
 private:
     EventPoller::Ptr _poller;
     std::shared_ptr<Timer> _conTimer;
@@ -371,10 +370,11 @@ private:
     atomic<bool> _enableRecv;
     atomic<bool> _canSendSock;
     //发送超时时间
-    uint32_t _sendTimeOutSec = SEND_TIME_OUT_SEC;
-    uint32_t _lastFlushStamp = 0;
+    uint32_t _sendTimeOutMS = SEND_TIME_OUT_SEC * 1000;
+    Ticker _lastFlushTicker;
     int _sock_flags = SOCKET_DEFAULE_FLAGS;
     BufferRaw::Ptr _readBuffer;
+    std::shared_ptr<function<void(int)> > _asyncConnectCB;
 };
 
 class SocketFlags{
@@ -434,7 +434,7 @@ public:
     BufferRaw::Ptr obtainBuffer();
     BufferRaw::Ptr obtainBuffer(const void *data,int len);
     //触发onError事件
-    virtual void shutdown();
+    virtual void shutdown(const SockException &ex = SockException(Err_shutdown, "self shutdown"));
     /////////获取ip或端口///////////
     const string &get_local_ip();
     uint16_t get_local_port();
@@ -443,14 +443,14 @@ public:
     //套接字是否忙，如果套接字写缓存已满则返回true
     bool isSocketBusy() const;
 
-    bool async(TaskExecutor::Task &&task, bool may_sync = true);
-    bool async_first(TaskExecutor::Task &&task, bool may_sync = true);
-    bool sync(TaskExecutor::Task &&task) ;
-    bool sync_first(TaskExecutor::Task &&task);
+    Task::Ptr async(TaskIn &&task, bool may_sync = true);
+    Task::Ptr async_first(TaskIn &&task, bool may_sync = true);
+    void sync(TaskIn &&task) ;
+    void sync_first(TaskIn &&task);
 protected:
     Socket::Ptr _sock;
-private:
     EventPoller::Ptr _poller;
+private:
     string _local_ip;
     uint16_t _local_port = 0;
     string _peer_ip;

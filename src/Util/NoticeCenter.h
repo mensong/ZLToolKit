@@ -51,7 +51,7 @@ public:
 	static NoticeCenter &Instance();
 
 	template<typename ...ArgsType>
-	bool emitEvent(const char *strEvent,ArgsType &&...args){
+	bool emitEvent(const string &strEvent,ArgsType &&...args){
 		decltype(_mapListener)::mapped_type listenerMap;
 		{
 			lock_guard<recursive_mutex> lck(_mtxListener);
@@ -73,9 +73,38 @@ public:
 		return listenerMap.size();
 	}
 
+    template<typename ...ArgsType>
+    bool emitEventNoCopy(const string &strEvent,ArgsType &&...args){
+        lock_guard<recursive_mutex> lck(_mtxListener);
+        auto it0 = _mapListener.find(strEvent);
+        if (it0 == _mapListener.end()) {
+            return false;
+        }
+        auto &listenerMap = it0->second;
+        for(auto &pr : listenerMap){
+            typedef function<void(decltype(std::forward<ArgsType>(args))...)> funType;
+            funType *obj = (funType *)(pr.second.get());
+            try{
+                (*obj)(std::forward<ArgsType>(args)...);
+            }catch(InterruptException &ex){
+                break;
+            }
+        }
+        return listenerMap.size();
+    }
+
+	int listenerSize(const string &strEvent){
+        lock_guard<recursive_mutex> lck(_mtxListener);
+        auto it0 = _mapListener.find(strEvent);
+        if (it0 == _mapListener.end()) {
+            return 0;
+        }
+        return it0->second.size();
+    }
+
 
 	template<typename FUN>
-	void addListener(void *tag, const char *strEvent, const FUN &fun) {
+	void addListener(void *tag, const string &strEvent, const FUN &fun) {
 		typedef typename function_traits<FUN>::stl_function_type funType;
 		std::shared_ptr<void> pListener(new funType(fun), [](void *ptr) {
 			funType *obj = (funType *)ptr;
@@ -86,7 +115,7 @@ public:
 	}
 
 
-	void delListener(void *tag,const char *strEvent){
+	void delListener(void *tag,const string &strEvent){
 		lock_guard<recursive_mutex> lck(_mtxListener);
 		auto it = _mapListener.find(strEvent);
 		if(it == _mapListener.end()){

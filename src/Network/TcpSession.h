@@ -56,7 +56,7 @@ public:
     //作为该TcpSession的唯一标识符
     virtual string getIdentifier() const;
     //安全的脱离TcpServer并触发onError事件
-    void safeShutdown();
+    void safeShutdown(const SockException &ex = SockException(Err_shutdown, "self shutdown"));
 };
 
 template<typename TcpSessionType>
@@ -92,6 +92,12 @@ protected:
 private:
 	SSL_Box _sslBox;
 };
+
+#define TraceP(ptr) TraceL << ptr << "(" << ptr->get_peer_ip() << ":" << ptr->get_peer_port() << ") "
+#define DebugP(ptr) DebugL << ptr << "(" << ptr->get_peer_ip() << ":" << ptr->get_peer_port() << ") "
+#define InfoP(ptr) InfoL << ptr << "(" << ptr->get_peer_ip() << ":" << ptr->get_peer_port() << ") "
+#define WarnP(ptr) WarnL << ptr << "(" << ptr->get_peer_ip() << ":" << ptr->get_peer_port() << ") "
+#define ErrorP(ptr) ErrorL << ptr << "(" << ptr->get_peer_ip() << ":" << ptr->get_peer_port() << ") "
 
 
 } /* namespace toolkit */
