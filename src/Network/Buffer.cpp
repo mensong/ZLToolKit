@@ -1,4 +1,4 @@
-//
+﻿//
 // Created by xzl on 2019/3/18.
 //
 
@@ -17,7 +17,7 @@ int sendmsg(int fd, const struct msghdr *msg, int flags) {
     int total = 0;
     for(auto i = 0; i != msg->msg_iovlen ; ++i ){
         do {
-            n = sendto(fd,(char *)msg->msg_iov[i].iov_base,msg->msg_iov[i].iov_len,flags,NULL,0);
+            n = sendto(fd,(char *)msg->msg_iov[i].iov_base,msg->msg_iov[i].iov_len,flags,(struct sockaddr *)msg->msg_name,msg->msg_namelen);
         }while (-1 == n && UV_EINTR == get_uv_error(true));
 
         if(n == -1 ){

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * MIT License
  *
  * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
@@ -361,6 +361,7 @@ private:
     MutexWrapper<recursive_mutex> _mtx_bufferSending;
     List<BufferList::Ptr> _bufferSending;
     /////////////////////
+    MutexWrapper<recursive_mutex> _mtx_event;
     onReadCB _readCB;
     onErrCB _errCB;
     onAcceptCB _acceptCB;

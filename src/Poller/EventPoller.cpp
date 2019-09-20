@@ -266,12 +266,12 @@ EventPoller::Ptr EventPoller::getCurrentPoller(){
     }
     return it->second.lock();
 }
-void EventPoller::runLoop(bool blocked) {
+void EventPoller::runLoop(bool blocked,bool registCurrentPoller) {
     if (blocked) {
         ThreadPool::setPriority(_priority);
         lock_guard<mutex> lck(_mtx_runing);
         _loopThreadId = this_thread::get_id();
-        {
+        if(registCurrentPoller){
             lock_guard<mutex> lck(s_allThreadsMtx);
             s_allThreads[_loopThreadId] = shared_from_this();
         }
@@ -372,28 +372,30 @@ void EventPoller::runLoop(bool blocked) {
         }
 #endif //HAS_EPOLL
     }else{
-        _loopThread = new thread(&EventPoller::runLoop, this, true);
+        _loopThread = new thread(&EventPoller::runLoop, this, true,registCurrentPoller);
         _sem_run_started.wait();
     }
 }
 
 uint64_t EventPoller::flushDelayTask(uint64_t now_time) {
-    decltype(_delayTask) taskUpdated;
+    decltype(_delayTask) taskCopy;
+    taskCopy.swap(_delayTask);
 
-    for(auto it = _delayTask.begin() ; it != _delayTask.end() && it->first <= now_time ; it = _delayTask.erase(it)){
+    for(auto it = taskCopy.begin() ; it != taskCopy.end() && it->first <= now_time ; it = taskCopy.erase(it)){
         //已到期的任务
         try {
             auto next_delay = (*(it->second))();
             if(next_delay){
                 //可重复任务,更新时间截止线
-                taskUpdated.emplace(next_delay + now_time,std::move(it->second));
+                _delayTask.emplace(next_delay + now_time,std::move(it->second));
             }
         }catch (std::exception &ex){
             ErrorL << "EventPoller执行延时任务捕获到异常:" << ex.what();
         }
     }
 
-    _delayTask.insert(taskUpdated.begin(),taskUpdated.end());
+    taskCopy.insert(_delayTask.begin(),_delayTask.end());
+    taskCopy.swap(_delayTask);
 
     auto it = _delayTask.begin();
     if(it == _delayTask.end()){
@@ -441,17 +443,21 @@ EventPoller::Ptr EventPollerPool::getFirstPoller(){
 
 EventPoller::Ptr EventPollerPool::getPoller(){
     auto poller = EventPoller::getCurrentPoller();
-    if(poller){
+    if(_preferCurrentThread && poller){
         return poller;
     }
     return dynamic_pointer_cast<EventPoller>(getExecutor());
+}
+
+void EventPollerPool::preferCurrentThread(bool flag){
+    _preferCurrentThread = flag;
 }
 
 EventPollerPool::EventPollerPool(){
     auto size = s_pool_size ? s_pool_size : thread::hardware_concurrency();
     createThreads([](){
         EventPoller::Ptr ret(new EventPoller);
-        ret->runLoop(false);
+        ret->runLoop(false, true);
         return ret;
     },size);
     InfoL << "创建EventPoller个数:" << size;

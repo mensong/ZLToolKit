@@ -1,4 +1,4 @@
-//
+﻿//
 // Created by xzl on 2019/3/18.
 //
 
@@ -90,6 +90,23 @@ public:
     //分配内存大小
     void setCapacity(uint32_t capacity){
         if(_data){
+            do{
+                if(capacity > _capacity){
+                    //请求的内存大于当前内存，那么重新分配
+                    break;
+                }
+
+                if(_capacity < 2 * 1024){
+                    //2K以下，不重复开辟内存，直接复用
+                    return;
+                }
+
+                if(2 * capacity > _capacity){
+                    //如果请求的内存大于当前内存的一半，那么也复用
+                    return;
+                }
+            }while(false);
+
             delete [] _data;
         }
         _data = new char[capacity];
