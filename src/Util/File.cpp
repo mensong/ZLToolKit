@@ -36,6 +36,7 @@
 #include "Util/util.h"
 #include "Util/logger.h"
 #include "Util/uv_errno.h"
+#include "Util/onceToken.h"
 
 using namespace std;
 using namespace toolkit;
@@ -247,6 +248,7 @@ string File::loadFile(const char *path) {
 	fseek(fp,0,SEEK_SET);
 	string str(len,'\0');
 	fread((char *)str.data(),str.size(),1,fp);
+    fclose(fp);
 	return str;
 }
 
@@ -258,6 +260,55 @@ bool File::saveFile(const string &data, const char *path) {
 	fwrite(data.data(),data.size(),1,fp);
 	fclose(fp);
 	return true;
+}
+
+string File::parentDir(const string &path) {
+	auto parent_dir = path;
+	if(parent_dir.back() == '/'){
+		parent_dir.pop_back();
+	}
+	auto pos = parent_dir.rfind('/');
+	if(pos != string::npos){
+		parent_dir = parent_dir.substr(0,pos + 1);
+	}
+	return std::move(parent_dir);
+}
+
+string File::absolutePath(const string &path,const string &currentPath_in,bool canAccessParent) {
+	string currentPath = currentPath_in;
+	if(currentPath.front() == '.'){
+        //如果当前目录是相对路径，那么先转换成绝对路径
+		currentPath = absolutePath(currentPath_in,exeDir(),true);
+	}
+	if(currentPath.back() != '/'){
+		//确保当前目录最后字节为'/'
+		currentPath.push_back('/');
+	}
+
+    auto dir_vec = split(path,"/");
+	for(auto &dir : dir_vec){
+		if(dir.empty() || dir == "."){
+			//忽略空或本文件夹
+			continue;
+		}
+		if(dir == ".."){
+			//访问上级目录
+			if(!canAccessParent && currentPath.size() <= currentPath_in.size()){
+				//不能访问根目录之外的目录
+				return "";
+			}
+			currentPath = parentDir(currentPath);
+			continue;
+		}
+		currentPath.append(dir);
+		currentPath.append("/");
+	}
+
+	if(path.back() != '/' && currentPath.back() == '/'){
+		//在路径是文件的情况下，防止转换成目录
+		currentPath.pop_back();
+	}
+	return currentPath;
 }
 
 } /* namespace toolkit */
