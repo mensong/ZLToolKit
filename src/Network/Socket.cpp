@@ -1,25 +1,11 @@
 ﻿/*
- * MIT License
+ * Copyright (c) 2016 The ZLToolKit project authors. All Rights Reserved.
  *
- * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
+ * This file is part of ZLToolKit(https://github.com/xiongziliang/ZLToolKit).
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Use of this source code is governed by MIT license that can be found in the
+ * LICENSE file in the root of the source tree. All contributing project authors
+ * may be found in the AUTHORS file in the root of the source tree.
  */
 
 #include <type_traits>
@@ -28,12 +14,10 @@
 #include "Util/util.h"
 #include "Util/logger.h"
 #include "Util/uv_errno.h"
-#include "Util/TimeTicker.h"
 #include "Thread/semaphore.h"
 #include "Poller/EventPoller.h"
 #include "Thread/WorkThreadPool.h"
 using namespace std;
-
 
 #define LOCK_GUARD(mtx) lock_guard<decltype(mtx)> lck(mtx)
 
@@ -249,7 +233,8 @@ bool Socket::attachEvent(const SockFD::Ptr &pSock,bool isUdp) {
     weak_ptr<SockFD> weakSock = pSock;
     _enableRecv = true;
     if(!_readBuffer){
-        _readBuffer = std::make_shared<BufferRaw>(isUdp ? 1600 : 128 * 1024);
+        //udp包最大能达到64KB
+        _readBuffer = std::make_shared<BufferRaw>(isUdp ? 0xFFFF : 128 * 1024);
     }
     int result = _poller->addEvent(pSock->rawFd(), Event_Read | Event_Error | Event_Write, [weakSelf,weakSock,isUdp](int event) {
         auto strongSelf = weakSelf.lock();
@@ -372,7 +357,8 @@ int Socket::send(string &&buf, struct sockaddr *addr, socklen_t addr_len, bool t
 }
 
 int Socket::send(const Buffer::Ptr &buf , struct sockaddr *addr, socklen_t addr_len, bool try_flush){
-    if (!buf || !buf->size()) {
+    auto size = buf ? buf->size() : 0;
+    if (!size) {
         return 0;
     }
 
@@ -395,7 +381,7 @@ int Socket::send(const Buffer::Ptr &buf , struct sockaddr *addr, socklen_t addr_
     if(try_flush){
         if (_canSendSock) {
             //该socket可写
-            return flushData(sock, false) ? buf->size() : -1;
+            return flushData(sock, false) ? size : -1;
         }
 
         //该socket不可写,判断发送超时
@@ -406,7 +392,7 @@ int Socket::send(const Buffer::Ptr &buf , struct sockaddr *addr, socklen_t addr_
         }
     }
 
-    return buf->size();
+    return size;
 }
 
 void Socket::onFlushed(const SockFD::Ptr &pSock) {
@@ -425,6 +411,26 @@ void Socket::closeSock() {
     _asyncConnectCB.reset();
     LOCK_GUARD(_mtx_sockFd);
     _sockFd.reset();
+}
+
+int Socket::getSendBufferCount(){
+    int ret = 0;
+    {
+        LOCK_GUARD(_mtx_bufferWaiting);
+        ret += _bufferWaiting.size();
+    }
+
+    {
+        LOCK_GUARD(_mtx_bufferSending);
+        _bufferSending.for_each([&](BufferList::Ptr &buf){
+            ret += buf->count();
+        });
+    }
+    return ret;
+}
+
+uint64_t Socket::elapsedTimeAfterFlushed(){
+    return _lastFlushTicker.elapsedTime();
 }
 
 bool Socket::listen(const SockFD::Ptr &pSock){
@@ -578,6 +584,11 @@ uint16_t Socket::get_peer_port() {
     return SockUtil::get_peer_port(_sockFd->rawFd());
 }
 
+string Socket::getIdentifier() const{
+    static string class_name = "Socket:";
+    return class_name + to_string(reinterpret_cast<uint64_t>(this));
+}
+
 bool Socket::flushData(const SockFD::Ptr &pSock,bool bPollerThread) {
     decltype(_bufferSending) bufferSendingTmp;
     {
@@ -723,7 +734,7 @@ void Socket::setSendTimeOutSecond(uint32_t second){
 }
 
 BufferRaw::Ptr Socket::obtainBuffer() {
-    return std::make_shared<BufferRaw>() ;//_bufferPool.obtain();
+    return std::make_shared<BufferRaw>();//_bufferPool.obtain();
 }
 
 bool Socket::isSocketBusy() const{
@@ -762,14 +773,52 @@ void Socket::setSendFlags(int flags) {
     _sock_flags = flags;
 }
 
+///////////////SockSender///////////////////
+
+SockSender &SockSender::operator<<(const char *buf) {
+    send(buf);
+    return *this;
+}
+
+SockSender &SockSender::operator<<(const string &buf) {
+    send(buf);
+    return *this;
+}
+
+SockSender &SockSender::operator<<(string &&buf) {
+    send(std::move(buf));
+    return *this;
+}
+
+SockSender &SockSender::operator<<(const Buffer::Ptr &buf) {
+    send(buf);
+    return *this;
+}
+
+int SockSender::send(const string &buf) {
+    auto buffer = std::make_shared<BufferString>(buf);
+    return send(buffer);
+}
+
+int SockSender::send(string &&buf) {
+    auto buffer = std::make_shared<BufferString>(std::move(buf));
+    return send(buffer);
+}
+
+int SockSender::send(const char *buf, int size) {
+    auto buffer = std::make_shared<BufferRaw>();
+    buffer->assign(buf,size);
+    return send(buffer);
+}
+
 ///////////////SocketHelper///////////////////
+
 SocketHelper::SocketHelper(const Socket::Ptr &sock) {
     setSock(sock);
 }
 
 SocketHelper::~SocketHelper() {}
 
-//重新设置socket
 void SocketHelper::setSock(const Socket::Ptr &sock) {
     _sock = sock;
     if(_sock){
@@ -777,125 +826,37 @@ void SocketHelper::setSock(const Socket::Ptr &sock) {
     }
 }
 
-
-void SocketHelper::setPoller(const EventPoller::Ptr &poller){
-    if(poller){
-        _poller = poller;
-    }
-}
-
 EventPoller::Ptr SocketHelper::getPoller(){
     return _poller;
-}
-
-
-//设置socket flags
-SocketHelper &SocketHelper::operator<<(const SocketFlags &flags) {
-    if(!_sock){
-        return *this;
-    }
-    _sock->setSendFlags(flags._flags);
-    return *this;
-}
-
-//////////////////operator << 系列函数//////////////////
-//发送char *
-SocketHelper &SocketHelper::operator<<(const char *buf) {
-    if (!_sock) {
-        return *this;
-    }
-
-    send(buf);
-    return *this;
-}
-
-//发送字符串
-SocketHelper &SocketHelper::operator<<(const string &buf) {
-    if (!_sock) {
-        return *this;
-    }
-    send(buf);
-    return *this;
-}
-
-//发送字符串
-SocketHelper &SocketHelper::operator<<(string &&buf) {
-    if (!_sock) {
-        return *this;
-    }
-    send(std::move(buf));
-    return *this;
-}
-
-//发送Buffer对象
-SocketHelper &SocketHelper::operator<<(const Buffer::Ptr &buf) {
-    if (!_sock) {
-        return *this;
-    }
-    send(buf);
-    return *this;
-}
-
-
-//////////////////send系列函数//////////////////
-int SocketHelper::send(const string &buf) {
-    if (!_sock) {
-        return -1;
-    }
-    auto buffer = std::make_shared<BufferString>(buf);
-    return send(buffer);
-}
-
-int SocketHelper::send(string &&buf) {
-    if (!_sock) {
-        return -1;
-    }
-    auto buffer = std::make_shared<BufferString>(std::move(buf));
-    return send(buffer);
-}
-
-int SocketHelper::send(const char *buf, int size) {
-    if (!_sock) {
-        return -1;
-    }
-    auto buffer = _sock->obtainBuffer();
-    buffer->assign(buf,size);
-    return send(buffer);
 }
 
 int SocketHelper::send(const Buffer::Ptr &buf) {
     if (!_sock) {
         return -1;
     }
-    return _sock->send(buf);
-}
-
-////////其他方法////////
-//从缓存池中获取一片缓存
-BufferRaw::Ptr SocketHelper::obtainBuffer() {
-    if (!_sock) {
-        return nullptr;
-    }
-    return _sock->obtainBuffer();
+    return _sock->send(buf, nullptr, 0, _try_flush);
 }
 
 BufferRaw::Ptr SocketHelper::obtainBuffer(const void *data, int len) {
-    BufferRaw::Ptr buffer = obtainBuffer();
-    if(buffer){
+    BufferRaw::Ptr buffer;
+    if (!_sock) {
+        buffer = std::make_shared<BufferRaw>();
+    }else{
+        buffer = _sock->obtainBuffer();
+    }
+    if(data && len){
         buffer->assign((const char *)data,len);
     }
     return buffer;
 };
 
-//触发onError事件
 void SocketHelper::shutdown(const SockException &ex) {
     if (_sock) {
         _sock->emitErr(ex);
     }
 }
 
-/////////获取ip或端口///////////
-const string& SocketHelper::get_local_ip(){
+string SocketHelper::get_local_ip(){
     if(_sock && _local_ip.empty()){
         _local_ip = _sock->get_local_ip();
     }
@@ -909,7 +870,7 @@ uint16_t SocketHelper::get_local_port() {
     return _local_port;
 }
 
-const string& SocketHelper::get_peer_ip(){
+string SocketHelper::get_peer_ip(){
     if(_sock && _peer_ip.empty()){
         _peer_ip = _sock->get_peer_ip();
     }
@@ -938,12 +899,15 @@ Task::Ptr SocketHelper::async_first(TaskIn &&task, bool may_sync) {
     return _poller->async_first(std::move(task),may_sync);
 }
 
-void SocketHelper::sync(TaskIn &&task) {
-    _poller->sync(std::move(task));
+void SocketHelper::setSendFlushFlag(bool try_flush){
+    _try_flush = try_flush;
 }
 
-void SocketHelper::sync_first(TaskIn &&task) {
-    _poller->sync_first(std::move(task));
+void SocketHelper::setSendFlags(int flags){
+    if(!_sock){
+        return;
+    }
+    _sock->setSendFlags(flags);
 }
 
 }  // namespace toolkit

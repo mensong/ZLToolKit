@@ -1,25 +1,11 @@
 ﻿/*
- * MIT License
+ * Copyright (c) 2016 The ZLToolKit project authors. All Rights Reserved.
  *
- * Copyright (c) 2016-2019 xiongziliang <771730766@qq.com>
+ * This file is part of ZLToolKit(https://github.com/xiongziliang/ZLToolKit).
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Use of this source code is governed by MIT license that can be found in the
+ * LICENSE file in the root of the source tree. All contributing project authors
+ * may be found in the AUTHORS file in the root of the source tree.
  */
 
 #ifndef UTIL_LOGGER_H_
@@ -243,10 +229,10 @@ public:
     ~FileChannelBase();
 
     void write(const Logger &logger , const LogContextPtr &ctx) override;
-    void setPath(const string &path);
+    bool setPath(const string &path);
     const string &path() const;
 protected:
-    virtual void open();
+    virtual bool open();
     virtual void close();
 protected:
     ofstream _fstream;
@@ -286,6 +272,7 @@ private:
      */
     void clean();
 private:
+    bool _canWrite = false;
     string _dir;
     int64_t _last_day = -1;
     map<uint64_t,string> _log_file_map;
@@ -303,13 +290,15 @@ public:
 };
 #endif//#if defined(__MACH__) || ((defined(__linux) || defined(__linux__)) &&  !defined(ANDROID))
 
-#define TraceL LogContextCapturer(Logger::Instance(), LTrace, __FILE__,__FUNCTION__, __LINE__)
-#define DebugL LogContextCapturer(Logger::Instance(),LDebug, __FILE__,__FUNCTION__, __LINE__)
-#define InfoL LogContextCapturer(Logger::Instance(),LInfo, __FILE__,__FUNCTION__, __LINE__)
-#define WarnL LogContextCapturer(Logger::Instance(),LWarn,__FILE__, __FUNCTION__, __LINE__)
-#define ErrorL LogContextCapturer(Logger::Instance(),LError,__FILE__, __FUNCTION__, __LINE__)
-#define WriteL(level) LogContextCapturer(Logger::Instance(),level,__FILE__, __FUNCTION__, __LINE__)
+//可重置默认值
+extern Logger* g_defaultLogger;
+
+#define TraceL LogContextCapturer(*g_defaultLogger, LTrace, __FILE__,__FUNCTION__, __LINE__)
+#define DebugL LogContextCapturer(*g_defaultLogger,LDebug, __FILE__,__FUNCTION__, __LINE__)
+#define InfoL LogContextCapturer(*g_defaultLogger,LInfo, __FILE__,__FUNCTION__, __LINE__)
+#define WarnL LogContextCapturer(*g_defaultLogger,LWarn,__FILE__, __FUNCTION__, __LINE__)
+#define ErrorL LogContextCapturer(*g_defaultLogger,LError,__FILE__, __FUNCTION__, __LINE__)
+#define WriteL(level) LogContextCapturer(*g_defaultLogger,level,__FILE__, __FUNCTION__, __LINE__)
 
 } /* namespace toolkit */
-
 #endif /* UTIL_LOGGER_H_ */
