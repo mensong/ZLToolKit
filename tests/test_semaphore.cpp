@@ -1,17 +1,16 @@
 ﻿/*
  * Copyright (c) 2016 The ZLToolKit project authors. All Rights Reserved.
  *
- * This file is part of ZLToolKit(https://github.com/xiongziliang/ZLToolKit).
+ * This file is part of ZLToolKit(https://github.com/ZLMediaKit/ZLToolKit).
  *
  * Use of this source code is governed by MIT license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
-#include <signal.h>
-#include <iostream>
+#include <csignal>
 #include <atomic>
-#include <Util/TimeTicker.h>
+#include "Util/TimeTicker.h"
 #include "Util/logger.h"
 #include "Thread/threadgroup.h"
 #include "Thread/semaphore.h"
@@ -52,7 +51,7 @@ int main() {
 
     Ticker ticker;
     thread_group thread_producer;
-    for (int i = 0; i < thread::hardware_concurrency(); ++i) {
+    for (size_t i = 0; i < thread::hardware_concurrency(); ++i) {
         thread_producer.create_thread([]() {
             //1个生产者线程
             onProduce();

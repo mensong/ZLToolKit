@@ -1,7 +1,7 @@
 ﻿/*
  * Copyright (c) 2016 The ZLToolKit project authors. All Rights Reserved.
  *
- * This file is part of ZLToolKit(https://github.com/xiongziliang/ZLToolKit).
+ * This file is part of ZLToolKit(https://github.com/ZLMediaKit/ZLToolKit).
  *
  * Use of this source code is governed by MIT license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -13,14 +13,14 @@
 #include "Util/logger.h"
 #include "Util/util.h"
 #include "Network/TcpClient.h"
-#include <signal.h>
+#include <csignal>
 
 using namespace std;
 using namespace toolkit;
 
 class TestClient: public TcpClient {
 public:
-    typedef std::shared_ptr<TestClient> Ptr;
+    using Ptr = std::shared_ptr<TestClient>;
     TestClient() : TcpClient(){}
     ~TestClient(){}
     void connect(const string &strUrl, uint16_t iPort,float fTimeoutSec){
@@ -29,7 +29,7 @@ public:
     void disconnect(){
         shutdown();
     }
-    int commit(const string &method,const string &path,const string &host) {
+    size_t commit(const string &method,const string &path,const string &host) {
         string strGet = StrPrinter
                 << method
                 << " "
@@ -170,7 +170,7 @@ int main(int argc,char *argv[]){
             cout << "> ";
             getline(cin,cmd_line);
             CMDRegister::Instance()(cmd_line);
-        }catch (ExitException &ex){
+        }catch (ExitException &){
             break;
         }catch (std::exception &ex){
             cout << ex.what() << endl;

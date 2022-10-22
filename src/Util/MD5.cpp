@@ -36,8 +36,8 @@ documentation and/or software.
 /* interface header */
 #include "MD5.h"
 /* system implementation headers */
-#include <stdio.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 
 namespace toolkit {
 
@@ -350,7 +350,7 @@ std::string MD5::hexdigest() const
 }
 
 std::string MD5::rawdigest() const{
-    return string((char *)digest, sizeof(digest));
+    return std::string((char *)digest, sizeof(digest));
 }
 
 

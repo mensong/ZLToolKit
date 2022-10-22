@@ -22,9 +22,8 @@
 #ifndef AVUTIL_BASE64_H
 #define AVUTIL_BASE64_H
 
-#include <stdint.h>
+#include <cstdint>
 #include <string>
-using namespace std;
 
 /**
  * Decode a base64-encoded string.
@@ -60,13 +59,13 @@ char *av_base64_encode(char *out, int out_size, const uint8_t *in, int in_size);
  * @param txt 明文
  * @return 密文
  */
-string encodeBase64(const string &txt);
+std::string encodeBase64(const std::string &txt);
 
 /**
  * 解码base64
  * @param txt 密文
  * @return 明文
  */
-string decodeBase64(const string &txt);
+std::string decodeBase64(const std::string &txt);
 
 #endif /* AVUTIL_BASE64_H */
