@@ -374,11 +374,11 @@ void LogChannel::format(const Logger &logger, ostream &ost, const LogContextPtr 
 
     if (enable_detail) {
 #if defined(_WIN32)
-        ost << (!ctx->_flag.empty()? ctx->_flag: ctx->_module_name) <<"[" << GetCurrentProcessId() << "-" << ctx->_thread_name;
+    ost << "[" << GetCurrentProcessId() << "-" << ctx->_thread_name << "] [" << (!ctx->_flag.empty()? ctx->_flag: ctx->_module_name);
 #else
-        ost << (!ctx->_flag.empty()? ctx->_flag: logger.getName()) << "[" << getpid() << "-" << ctx->_thread_name;
+    ost << "[" << getpid() << "-" << ctx->_thread_name << "] [" << (!ctx->_flag.empty()? ctx->_flag: logger.getName());
 #endif
-        ost << "] " << ctx->_file << ":" << ctx->_line << " " << ctx->_function << " | ";
+    ost << "] " << ctx->_file << ":" << ctx->_line << " " << ctx->_function << " | ";
     }
 
     ost << ctx->str();
@@ -428,7 +428,7 @@ const string &FileChannelBase::path() const {
 bool FileChannelBase::open() {
     // Ensure a path was set
     if (_path.empty()) {
-        throw runtime_error("Log file path must be set.");
+        throw runtime_error("Log file path must be set");
     }
     // Open the file stream
     _fstream.close();

@@ -15,8 +15,19 @@ using namespace std;
 
 namespace toolkit {
 
-Session::Session(const Socket::Ptr &sock) : SocketHelper(sock) {}
-Session::~Session() = default;
+class TcpSession : public Session {};
+class UdpSession : public Session {};
+
+StatisticImp(UdpSession)
+StatisticImp(TcpSession)
+
+Session::Session(const Socket::Ptr &sock) : SocketHelper(sock) {
+    if (sock->sockType() == SockNum::Sock_TCP) {
+        _statistic_tcp.reset(new ObjectStatistic<TcpSession>);
+    } else {
+        _statistic_udp.reset(new ObjectStatistic<UdpSession>);
+    }
+}
 
 static atomic<uint64_t> s_session_index{0};
 
@@ -36,9 +47,5 @@ void Session::safeShutdown(const SockException &ex) {
         }
     });
 }
-
-StatisticImp(Session)
-StatisticImp(UdpSession)
-StatisticImp(TcpSession)
 
 } // namespace toolkit

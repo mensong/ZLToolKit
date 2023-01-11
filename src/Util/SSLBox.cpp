@@ -96,7 +96,7 @@ bool SSL_Initor::loadCertificate(const string &pem_or_p12, bool server_mode, con
                                  bool is_default) {
     auto cers = SSLUtil::loadPublicKey(pem_or_p12, password, is_file);
     auto key = SSLUtil::loadPrivateKey(pem_or_p12, password, is_file);
-    auto ssl_ctx = SSLUtil::makeSSLContext(cers, key, server_mode);
+    auto ssl_ctx = SSLUtil::makeSSLContext(cers, key, server_mode, true);
     if (!ssl_ctx) {
         return false;
     }
@@ -125,8 +125,8 @@ int SSL_Initor::findCertificate(SSL *ssl, int *, void *arg) {
         ctx = ref.getSSLCtx(vhost, (bool) (arg)).get();
         if (!ctx) {
             //未找到对应的证书
-            WarnL << "can not find any certificate of host:" << vhost
-                  << ", select default certificate of:" << ref._default_vhost[(bool) (arg)];
+            WarnL << "Can not find any certificate of host: " << vhost
+                  << ", select default certificate of: " << ref._default_vhost[(bool) (arg)];
         }
     }
 
@@ -137,7 +137,7 @@ int SSL_Initor::findCertificate(SSL *ssl, int *, void *arg) {
 
     if (!ctx) {
         //未有任何有效的证书
-        WarnL << "can not find any available certificate of host:" << (vhost ? vhost : "default host")
+        WarnL << "Can not find any available certificate of host: " << (vhost ? vhost : "default host")
               << ", tls handshake failed";
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
@@ -171,11 +171,11 @@ bool SSL_Initor::setContext(const string &vhost, const shared_ptr<SSL_CTX> &ctx,
             //通配符证书
             _ctxs_wildcards[server_mode][vhost.substr(1)] = ctx;
         }
-        DebugL << "add certificate of: " << vhost;
+        DebugL << "Add certificate of: " << vhost;
     }
     return true;
 #else
-    WarnL << "ENABLE_OPENSSL宏未启用,openssl相关功能将无效!";
+    WarnL << "ENABLE_OPENSSL disabled, you can not use any features based on openssl";
     return false;
 #endif //defined(ENABLE_OPENSSL)
 }
@@ -184,7 +184,7 @@ void SSL_Initor::setupCtx(SSL_CTX *ctx) {
 #if defined(ENABLE_OPENSSL)
     //加载默认信任证书
     SSLUtil::loadDefaultCAs(ctx);
-    SSL_CTX_set_cipher_list(ctx, "ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH");
+    SSL_CTX_set_cipher_list(ctx, "ALL:!ADH:!LOW:!EXP:!MD5:!3DES:@STRENGTH");
     SSL_CTX_set_verify_depth(ctx, 9);
     SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
@@ -192,7 +192,7 @@ void SSL_Initor::setupCtx(SSL_CTX *ctx) {
         if (!ok) {
             int depth = X509_STORE_CTX_get_error_depth(pStore);
             int err = X509_STORE_CTX_get_error(pStore);
-            WarnL << depth << " " << X509_verify_cert_error_string(err);
+            WarnL << "SSL_CTX_set_verify callback, depth: " << depth << " ,err: " << X509_verify_cert_error_string(err);
         }
         return s_ignore_invalid_cer ? 1 : ok;
     });
@@ -260,13 +260,17 @@ std::shared_ptr<SSL_CTX> SSL_Initor::getSSLCtxWildcards(const string &vhost, boo
 }
 
 std::shared_ptr<SSL_CTX> SSL_Initor::getSSLCtx_l(const string &vhost_in, bool server_mode) {
-    if (!server_mode) {
-        return _ctx_empty[server_mode];
-    }
     auto vhost = vhost_in;
     if (vhost.empty()) {
-        //没指定主机，选择默认主机
-        vhost = _default_vhost[server_mode];
+        if (!_default_vhost[server_mode].empty()) {
+            vhost = _default_vhost[server_mode];
+        } else {
+            //没默认主机，选择空主机
+            if (server_mode) {
+                WarnL << "Server with ssl must have certification and key";
+            }
+            return _ctx_empty[server_mode];
+        }
     }
     //根据主机名查找证书
     auto it = _ctxs[server_mode].find(vhost);
@@ -296,7 +300,7 @@ SSL_Box::SSL_Box(bool server_mode, bool enable, int buff_size) {
         SSL_set_bio(_ssl.get(), _read_bio, _write_bio);
         _server_mode ? SSL_set_accept_state(_ssl.get()) : SSL_set_connect_state(_ssl.get());
     } else {
-        WarnL << "ssl disabled!";
+        WarnL << "makeSSL failed";
     }
     _send_handshake = false;
     _buff_size = buff_size;
@@ -308,7 +312,7 @@ void SSL_Box::shutdown() {
     _buffer_send.clear();
     int ret = SSL_shutdown(_ssl.get());
     if (ret != 1) {
-        ErrorL << "SSL shutdown failed:" << SSLUtil::getLastError();
+        ErrorL << "SSL_shutdown failed: " << SSLUtil::getLastError();
     } else {
         flush();
     }
@@ -336,7 +340,7 @@ void SSL_Box::onRecv(const Buffer::Ptr &buffer) {
             continue;
         }
         //nwrite <= 0,出现异常
-        ErrorL << "ssl error:" << SSLUtil::getLastError();
+        ErrorL << "Ssl error on BIO_write: " << SSLUtil::getLastError();
         shutdown();
         break;
     }
@@ -473,7 +477,7 @@ void SSL_Box::flush() {
 
         if (offset != front->size()) {
             //这个包未消费完毕，出现了异常,清空数据并断开ssl
-            ErrorL << "ssl error:" << SSLUtil::getLastError();
+            ErrorL << "Ssl error on SSL_write: " << SSLUtil::getLastError();
             shutdown();
             break;
         }

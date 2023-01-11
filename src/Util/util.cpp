@@ -363,7 +363,7 @@ static atomic<uint64_t> s_currentMillisecond_system(getCurrentMicrosecondOrigin(
 static inline bool initMillisecondThread() {
     static std::thread s_thread([]() {
         setThreadName("stamp thread");
-        DebugL << "Stamp thread started!";
+        DebugL << "Stamp thread started";
         uint64_t last = getCurrentMicrosecondOrigin();
         uint64_t now;
         uint64_t microsecond = 0;
@@ -382,7 +382,7 @@ static inline bool initMillisecondThread() {
                 s_currentMicrosecond.store(microsecond, memory_order_release);
                 s_currentMillisecond.store(microsecond / 1000, memory_order_release);
             } else if (expired != 0) {
-                WarnL << "Stamp expired is abnormal:" << expired;
+                WarnL << "Stamp expired is abnormal: " << expired;
             }
             //休眠0.5 ms
             usleep(500);
@@ -568,7 +568,7 @@ bool setThreadAffinity(int i) {
     if (!pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask)) {
         return true;
     }
-    WarnL << "pthread_setaffinity_np failed:" << get_uv_errmsg();
+    WarnL << "pthread_setaffinity_np failed: " << get_uv_errmsg();
 #endif
     return false;
 }
@@ -637,6 +637,28 @@ string getEnv(const string &key) {
     }
     auto value = *ekey ? getenv(ekey) : nullptr;
     return value ? value : "";
+}
+
+template <typename... Args>
+string str_format(const string &format, Args... args) {
+  // Calculate the buffer size
+  auto size_buf = snprintf(nullptr, 0, format.c_str(), args ...) + 1;
+  // Allocate the buffer
+#if __cplusplus >= 201703L
+  // C++17
+  auto buf = std::make_unique<char[]>(size_buf);
+#else
+  // C++11
+  unique_ptr<char[]> buf(new(nothrow) char[size_buf]);
+#endif
+  // Check if the allocation is successful
+  if (buf == nullptr) {
+    return {};
+  }
+  // Fill the buffer with formatted string
+  auto result = snprintf(buf.get(), size_buf, format.c_str(), args ...);
+  // Return the formatted string
+  return string(buf.get(), buf.get() + result);
 }
 
 }  // namespace toolkit
