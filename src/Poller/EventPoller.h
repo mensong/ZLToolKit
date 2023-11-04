@@ -123,7 +123,7 @@ public:
     /**
      * 获取poller线程id
      */
-    const std::thread::id& getThreadId() const;
+    std::thread::id getThreadId() const;
 
     /**
      * 获取线程名
@@ -134,7 +134,7 @@ private:
     /**
      * 本对象只允许在EventPollerPool中构造
      */
-    EventPoller(std::string name, ThreadPool::Priority priority = ThreadPool::PRIORITY_HIGHEST);
+    EventPoller(std::string name);
 
     /**
      * 执行事件轮询
@@ -158,12 +158,6 @@ private:
     Task::Ptr async_l(TaskIn task, bool may_sync = true, bool first = false);
 
     /**
-     * 阻塞当前线程，等待轮询线程退出;
-     * 在执行shutdown接口时本函数会退出
-     */
-    void wait();
-
-    /**
      * 结束事件轮询
      * 需要指出的是，一旦结束就不能再次恢复轮询线程
      */
@@ -179,6 +173,11 @@ private:
      */
     uint64_t getMinDelay();
 
+    /**
+     * 添加管道监听事件
+     */
+    void addEventPipe();
+
 private:
     class ExitException : public std::exception {};
 
@@ -189,14 +188,8 @@ private:
     std::string _name;
     //当前线程下，所有socket共享的读缓存
     std::weak_ptr<BufferRaw> _shared_buffer;
-    //线程优先级
-    ThreadPool::Priority _priority;
-    //正在运行事件循环时该锁处于被锁定状态
-    std::mutex _mtx_running;
     //执行事件循环的线程
     std::thread *_loop_thread = nullptr;
-    //事件循环的线程id
-    std::thread::id _loop_thread_id;
     //通知事件循环的线程已启动
     semaphore _sem_run_started;
 
@@ -231,6 +224,9 @@ private:
 class EventPollerPool : public std::enable_shared_from_this<EventPollerPool>, public TaskExecutorGetterImp {
 public:
     using Ptr = std::shared_ptr<EventPollerPool>;
+    static const std::string kOnStarted;
+    #define EventPollerPoolOnStartedArgs EventPollerPool &pool, size_t &size
+
     ~EventPollerPool() = default;
 
     /**

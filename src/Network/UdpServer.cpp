@@ -44,14 +44,20 @@ static UdpServer::PeerIdType makeSockId(sockaddr *addr, int) {
 
 UdpServer::UdpServer(const EventPoller::Ptr &poller) : Server(poller) {
     setOnCreateSocket(nullptr);
+}
+
+void UdpServer::setupEvent() {
     _socket = createSocket(_poller);
-    _socket->setOnRead([this](const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
-        onRead(buf, addr, addr_len);
+    std::weak_ptr<UdpServer> weak_self = std::static_pointer_cast<UdpServer>(shared_from_this());
+    _socket->setOnRead([weak_self](const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
+        if (auto strong_self = weak_self.lock()) {
+            strong_self->onRead(buf, addr, addr_len);
+        }
     });
 }
 
 UdpServer::~UdpServer() {
-    if (!_cloned && _socket->rawFD() != -1) {
+    if (!_cloned && _socket && _socket->rawFD() != -1) {
         InfoL << "Close udp server [" << _socket->get_local_ip() << "]: " << _socket->get_local_port();
     }
     _timer.reset();
@@ -64,34 +70,27 @@ UdpServer::~UdpServer() {
 }
 
 void UdpServer::start_l(uint16_t port, const std::string &host) {
+    setupEvent();
     //主server才创建session map，其他cloned server共享之
     _session_mutex = std::make_shared<std::recursive_mutex>();
     _session_map = std::make_shared<std::unordered_map<PeerIdType, SessionHelper::Ptr> >();
 
-    if (!_socket->bindUdpSock(port, host.c_str())) {
-        // udp 绑定端口失败, 可能是由于端口占用或权限问题
-        std::string err = (StrPrinter << "Bind udp socket on " << host << " " << port << " failed: " << get_uv_errmsg(true));
-        throw std::runtime_error(err);
-    }
-
     // 新建一个定时器定时管理这些 udp 会话,这些对象只由主server做超时管理，cloned server不管理
-    std::weak_ptr<UdpServer> weak_self = std::dynamic_pointer_cast<UdpServer>(shared_from_this());
+    std::weak_ptr<UdpServer> weak_self = std::static_pointer_cast<UdpServer>(shared_from_this());
     _timer = std::make_shared<Timer>(2.0f, [weak_self]() -> bool {
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return false;
+        if (auto strong_self = weak_self.lock()) {
+            strong_self->onManagerSession();
+            return true;
         }
-        strong_self->onManagerSession();
-        return true;
+        return false;
     }, _poller);
 
     //clone server至不同线程，让udp server支持多线程
     EventPollerPool::Instance().for_each([&](const TaskExecutor::Ptr &executor) {
-        auto poller = std::dynamic_pointer_cast<EventPoller>(executor);
-        if (poller == _poller || !poller) {
+        auto poller = std::static_pointer_cast<EventPoller>(executor);
+        if (poller == _poller) {
             return;
         }
-
         auto &serverRef = _cloned_server[poller.get()];
         if (!serverRef) {
             serverRef = onCreatServer(poller);
@@ -101,6 +100,21 @@ void UdpServer::start_l(uint16_t port, const std::string &host) {
         }
     });
 
+    if (!_socket->bindUdpSock(port, host.c_str())) {
+        // udp 绑定端口失败, 可能是由于端口占用或权限问题
+        std::string err = (StrPrinter << "Bind udp socket on " << host << " " << port << " failed: " << get_uv_errmsg(true));
+        throw std::runtime_error(err);
+    }
+
+    for (auto &pr: _cloned_server) {
+        // 启动子Server
+#if 0
+        pr.second->_socket->cloneSocket(*_socket);
+#else
+        // 实验发现cloneSocket方式虽然可以节省fd资源，但是在某些系统上线程漂移问题更严重
+        pr.second->_socket->bindUdpSock(_socket->get_local_port(), _socket->get_local_ip());
+#endif
+    }
     InfoL << "UDP server bind to [" << host << "]: " << port;
 }
 
@@ -112,16 +126,15 @@ void UdpServer::cloneFrom(const UdpServer &that) {
     if (!that._socket) {
         throw std::invalid_argument("UdpServer::cloneFrom other with null socket");
     }
+    setupEvent();
+    _cloned = true;
     // clone callbacks
     _on_create_socket = that._on_create_socket;
     _session_alloc = that._session_alloc;
     _session_mutex = that._session_mutex;
     _session_map = that._session_map;
-    // clone udp socket
-    _socket->cloneFromPeerSocket(*(that._socket));
     // clone properties
     this->mINI::operator=(that);
-    _cloned = true;
 }
 
 void UdpServer::onRead(const Buffer::Ptr &buf, sockaddr *addr, int addr_len) {
@@ -175,10 +188,7 @@ void UdpServer::onManagerSession() {
         copy_map = std::make_shared<std::unordered_map<PeerIdType, SessionHelper::Ptr> >(*_session_map);
     }
     EventPollerPool::Instance().for_each([copy_map](const TaskExecutor::Ptr &executor) {
-        auto poller = std::dynamic_pointer_cast<EventPoller>(executor);
-        if (!poller) {
-            return;
-        }
+        auto poller = std::static_pointer_cast<EventPoller>(executor);
         poller->async([copy_map]() {
             for (auto &pr : *copy_map) {
                 auto &session = pr.second->session();
@@ -197,7 +207,7 @@ void UdpServer::onManagerSession() {
     });
 }
 
-const Session::Ptr &UdpServer::getOrCreateSession(const UdpServer::PeerIdType &id, const Buffer::Ptr &buf, sockaddr *addr, int addr_len, bool &is_new) {
+Session::Ptr UdpServer::getOrCreateSession(const UdpServer::PeerIdType &id, const Buffer::Ptr &buf, sockaddr *addr, int addr_len, bool &is_new) {
     {
         //减小临界区
         std::lock_guard<std::recursive_mutex> lock(*_session_mutex);
@@ -212,16 +222,17 @@ const Session::Ptr &UdpServer::getOrCreateSession(const UdpServer::PeerIdType &i
 
 static Session::Ptr s_null_session;
 
-const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
-    auto socket = createSocket(_poller, buf, addr, addr_len);
+Session::Ptr UdpServer::createSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
+    // 此处改成自定义获取poller对象，防止负载不均衡
+    auto socket = createSocket(EventPollerPool::Instance().getPoller(false), buf, addr, addr_len);
     if (!socket) {
         //创建socket失败，本次onRead事件收到的数据直接丢弃
         return s_null_session;
     }
 
     auto addr_str = string((char *) addr, addr_len);
-    std::weak_ptr<UdpServer> weak_self = std::dynamic_pointer_cast<UdpServer>(shared_from_this());
-    auto session_creator = [this, weak_self, socket, addr_str, id]() -> const Session::Ptr & {
+    std::weak_ptr<UdpServer> weak_self = std::static_pointer_cast<UdpServer>(shared_from_this());
+    auto session_creator = [this, weak_self, socket, addr_str, id]() -> Session::Ptr {
         auto server = weak_self.lock();
         if (!server) {
             return s_null_session;
@@ -234,6 +245,7 @@ const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer:
             return it->second->session();
         }
 
+        assert(_socket);
         socket->bindUdpSock(_socket->get_local_port(), _socket->get_local_ip());
         socket->bindPeerAddr((struct sockaddr *) addr_str.data(), addr_str.size());
 
@@ -243,6 +255,7 @@ const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer:
         session->attachServer(*this);
 
         std::weak_ptr<Session> weak_session = session;
+        auto cls = helper->className();
         socket->setOnRead([weak_self, weak_session, id](const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
@@ -260,7 +273,7 @@ const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer:
             //收到非本peer fd的数据，让server去派发此数据到合适的session对象
             strong_self->onRead_l(false, id, buf, addr, addr_len);
         });
-        socket->setOnErr([weak_self, weak_session, id](const SockException &err) {
+        socket->setOnErr([weak_self, weak_session, id, cls](const SockException &err) {
             // 在本函数作用域结束时移除会话对象
             // 目的是确保移除会话前执行其 onError 函数
             // 同时避免其 onError 函数抛异常时没有移除会话对象
@@ -278,6 +291,7 @@ const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer:
             // 获取会话强应用
             if (auto strong_session = weak_session.lock()) {
                 // 触发 onError 事件回调
+                TraceP(strong_session) << cls << " on err: " << err;
                 strong_session->onError(err);
             }
         });

@@ -18,7 +18,7 @@
 namespace toolkit {
 
 //Tcp客户端，Socket对象默认开始互斥锁
-class TcpClient : public std::enable_shared_from_this<TcpClient>, public SocketHelper {
+class TcpClient : public SocketHelper {
 public:
     using Ptr = std::shared_ptr<TcpClient>;
     TcpClient(const EventPoller::Ptr &poller = nullptr);
@@ -60,6 +60,11 @@ public:
      */
     virtual void setNetAdapter(const std::string &local_ip);
 
+    /**
+     * 唯一标识
+     */
+    std::string getIdentifier() const override;
+
 protected:
     /**
      * 连接服务器结果回调
@@ -68,31 +73,15 @@ protected:
     virtual void onConnect(const SockException &ex) = 0;
 
     /**
-     * 收到数据回调
-     * @param buf 接收到的数据(该buffer会重复使用)
-     */
-    virtual void onRecv(const Buffer::Ptr &buf) = 0;
-
-    /**
-     * 数据全部发送完毕后回调
-     */
-    virtual void onFlush() {}
-
-    /**
-     * 被动断开连接回调
-     * @param ex 断开原因
-     */
-    virtual void onErr(const SockException &ex) = 0;
-
-    /**
      * tcp连接成功后每2秒触发一次该事件
      */
-    virtual void onManager() {}
+    void onManager() override {}
 
 private:
     void onSockConnect(const SockException &ex);
 
 private:
+    mutable std::string _id;
     std::string _net_adapter = "::";
     std::shared_ptr<Timer> _timer;
     //对象个数统计
@@ -148,6 +137,9 @@ public:
         _host = url;
         TcpClientType::startConnect(proxy_host, proxy_port, timeout_sec, local_port);
     }
+
+    bool overSsl() const override { return (bool)_ssl_box; }
+
 protected:
     void onConnect(const SockException &ex) override {
         if (!ex) {

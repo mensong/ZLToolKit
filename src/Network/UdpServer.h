@@ -30,14 +30,19 @@ public:
      */
     template<typename SessionType>
     void start(uint16_t port, const std::string &host = "::") {
+        static std::string cls_name = toolkit::demangle(typeid(SessionType).name());
         // Session 创建器, 通过它创建不同类型的服务器
         _session_alloc = [](const UdpServer::Ptr &server, const Socket::Ptr &sock) {
-            auto session = std::make_shared<SessionType>(sock);
+            auto session = std::shared_ptr<SessionType>(new SessionType(sock), [](SessionType * ptr) {
+                TraceP(static_cast<Session *>(ptr)) << "~" << cls_name;
+                delete ptr;
+            });
+            TraceP(static_cast<Session *>(session.get())) << cls_name;
             auto sock_creator = server->_on_create_socket;
             session->setOnCreateSocket([sock_creator](const EventPoller::Ptr &poller) {
                 return sock_creator(poller, nullptr, nullptr, 0);
             });
-            return std::make_shared<SessionHelper>(server, session);
+            return std::make_shared<SessionHelper>(server, std::move(session), cls_name);
         };
         start_l(port, host);
     }
@@ -84,17 +89,19 @@ private:
     /**
      * @brief 根据对端信息获取或创建一个会话
      */
-    const Session::Ptr &getOrCreateSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len, bool &is_new);
+    Session::Ptr getOrCreateSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len, bool &is_new);
 
     /**
      * @brief 创建一个会话, 同时进行必要的设置
      */
-    const Session::Ptr &createSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len);
+    Session::Ptr createSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len);
 
     /**
      * @brief 创建socket
      */
     Socket::Ptr createSocket(const EventPoller::Ptr &poller, const Buffer::Ptr &buf = nullptr, struct sockaddr *addr = nullptr, int addr_len = 0);
+
+    void setupEvent();
 
 private:
     bool _cloned = false;

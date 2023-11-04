@@ -39,9 +39,6 @@ namespace toolkit {
 #ifndef socklen_t
 #define socklen_t int
 #endif //!socklen_t
-#ifndef SHUT_RDWR
-#define SHUT_RDWR 2
-#endif //!SHUT_RDWR
 int ioctl(int fd, long cmd, u_long *ptr);
 int close(int fd);
 #endif // defined(_WIN32)
@@ -288,6 +285,7 @@ public:
      */
     static uint16_t get_peer_port(int sock);
 
+    static bool support_ipv6();
     /**
      * 线程安全的in_addr转ip字符串
      */

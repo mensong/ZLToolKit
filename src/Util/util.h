@@ -20,6 +20,7 @@
 #include <vector>
 #include <atomic>
 #include <unordered_map>
+#include "function_traits.h"
 #if defined(_WIN32)
 #undef FD_SETSIZE
 //修改默认64为1024路
@@ -84,67 +85,89 @@ private:
     noncopyable &operator=(noncopyable &&that) = delete;
 };
 
-//可以保存任意的对象
-class Any{
-public:
-    using Ptr = std::shared_ptr<Any>;
+#ifndef CLASS_FUNC_TRAITS
+#define CLASS_FUNC_TRAITS(func_name) \
+template<typename T, typename ... ARGS> \
+constexpr bool Has_##func_name(decltype(&T::on##func_name) /*unused*/) { \
+    using RET = typename function_traits<decltype(&T::on##func_name)>::return_type; \
+    using FuncType = RET (T::*)(ARGS...);   \
+    return std::is_same<decltype(&T::on ## func_name), FuncType>::value; \
+} \
+\
+template<class T, typename ... ARGS> \
+constexpr bool Has_##func_name(...) { \
+    return false; \
+} \
+\
+template<typename T, typename ... ARGS> \
+static void InvokeFunc_##func_name(typename std::enable_if<!Has_##func_name<T, ARGS...>(nullptr), T>::type &obj, ARGS ...args) {} \
+\
+template<typename T, typename ... ARGS>\
+static typename function_traits<decltype(&T::on##func_name)>::return_type InvokeFunc_##func_name(typename std::enable_if<Has_##func_name<T, ARGS...>(nullptr), T>::type &obj, ARGS ...args) {\
+    return obj.on##func_name(std::forward<ARGS>(args)...);\
+}
+#endif //CLASS_FUNC_TRAITS
 
-    Any() = default;
-    ~Any() = default;
+#ifndef CLASS_FUNC_INVOKE
+#define CLASS_FUNC_INVOKE(T, obj, func_name, ...) InvokeFunc_##func_name<T>(obj, ##__VA_ARGS__)
+#endif //CLASS_FUNC_INVOKE
 
-    template <typename C,typename ...ArgsType>
-    void set(ArgsType &&...args){
-        _data.reset(new C(std::forward<ArgsType>(args)...),[](void *ptr){
-            delete (C*) ptr;
-        });
-    }
-    template <typename C>
-    C& get(){
-        if(!_data){
-            throw std::invalid_argument("Any is empty");
-        }
-        C *ptr = (C *)_data.get();
-        return *ptr;
-    }
+CLASS_FUNC_TRAITS(Destory)
+CLASS_FUNC_TRAITS(Create)
 
-    operator bool() {
-        return _data.operator bool ();
-    }
-    bool empty(){
-        return !bool();
-    }
-private:
-    std::shared_ptr<void> _data;
-};
-
-//用于保存一些外加属性
-class AnyStorage : public std::unordered_map<std::string,Any>{
-public:
-    AnyStorage() = default;
-    ~AnyStorage() = default;
-    using Ptr = std::shared_ptr<AnyStorage>;
-};
-
-//对象安全的构建和析构
-//构建后执行onCreate函数
-//析构前执行onDestory函数
-//在函数onCreate和onDestory中可以执行构造或析构中不能调用的方法，比如说shared_from_this或者虚函数
+/**
+ * 对象安全的构建和析构,构建后执行onCreate函数,析构前执行onDestory函数
+ * 在函数onCreate和onDestory中可以执行构造或析构中不能调用的方法，比如说shared_from_this或者虚函数
+ * @warning onDestory函数确保参数个数为0；否则会被忽略调用
+ */
 class Creator {
 public:
-    template<typename C,typename ...ArgsType>
-    static std::shared_ptr<C> create(ArgsType &&...args){
-        std::shared_ptr<C> ret(new C(std::forward<ArgsType>(args)...),[](C *ptr){
-            ptr->onDestory();
+    /**
+     * 创建对象，用空参数执行onCreate和onDestory函数
+     * @param args 对象构造函数参数列表
+     * @return args对象的智能指针
+     */
+    template<typename C, typename ...ArgsType>
+    static std::shared_ptr<C> create(ArgsType &&...args) {
+        std::shared_ptr<C> ret(new C(std::forward<ArgsType>(args)...), [](C *ptr) {
+            try {
+                CLASS_FUNC_INVOKE(C, *ptr, Destory);
+            } catch (std::exception &ex){
+                onDestoryException(typeid(C), ex);
+            }
             delete ptr;
         });
-        ret->onCreate();
+        CLASS_FUNC_INVOKE(C, *ret, Create);
         return ret;
     }
+
+    /**
+     * 创建对象，用指定参数执行onCreate函数
+     * @param args 对象onCreate函数参数列表
+     * @warning args参数类型和个数必须与onCreate函数类型匹配(不可忽略默认参数)，否则会由于模板匹配失败导致忽略调用
+     * @return args对象的智能指针
+     */
+    template<typename C, typename ...ArgsType>
+    static std::shared_ptr<C> create2(ArgsType &&...args) {
+        std::shared_ptr<C> ret(new C(), [](C *ptr) {
+            try {
+                CLASS_FUNC_INVOKE(C, *ptr, Destory);
+            } catch (std::exception &ex){
+                onDestoryException(typeid(C), ex);
+            }
+            delete ptr;
+        });
+        CLASS_FUNC_INVOKE(C, *ret, Create, std::forward<ArgsType>(args)...);
+        return ret;
+    }
+
+private:
+    static void onDestoryException(const std::type_info &info, const std::exception &ex);
+
 private:
     Creator() = default;
     ~Creator() = default;
 };
-
 
 template <class C>
 class ObjectStatistic{
@@ -190,7 +213,7 @@ std::string strToLower(std::string &&str);
 std::string &strToUpper(std::string &str);
 std::string strToUpper(std::string &&str);
 //替换子字符串
-void replace(std::string &str, const std::string &old_str, const std::string &new_str) ;
+void replace(std::string &str, const std::string &old_str, const std::string &new_str, std::string::size_type b_pos = 0) ;
 //判断是否为ip
 bool isIP(const char *str);
 //字符串是否以xx开头
@@ -199,7 +222,27 @@ bool start_with(const std::string &str, const std::string &substr);
 bool end_with(const std::string &str, const std::string &substr);
 //拼接格式字符串
 template<typename... Args>
-std::string str_format(const std::string &format, Args... args);
+std::string str_format(const std::string &format, Args... args) {
+
+    // Calculate the buffer size
+    auto size_buf = snprintf(nullptr, 0, format.c_str(), args ...) + 1;
+    // Allocate the buffer
+#if __cplusplus >= 201703L
+    // C++17
+    auto buf = std::make_unique<char[]>(size_buf);
+#else
+    // C++11
+    std:: unique_ptr<char[]> buf(new(std::nothrow) char[size_buf]);
+#endif
+    // Check if the allocation is successful
+    if (buf == nullptr) {
+        return {};
+    }
+    // Fill the buffer with formatted string
+    auto result = snprintf(buf.get(), size_buf, format.c_str(), args ...);
+    // Return the formatted string
+    return std::string(buf.get(), buf.get() + result);
+}
 
 #ifndef bzero
 #define bzero(ptr,size)  memset((ptr),0,(size));
@@ -224,6 +267,10 @@ const char *strcasestr(const char *big, const char *little);
 
 #if !defined(strcasecmp)
     #define strcasecmp _stricmp
+#endif
+
+#if !defined(strncasecmp)
+#define strncasecmp _strnicmp
 #endif
 
 #ifndef ssize_t
@@ -292,6 +339,97 @@ std::string demangle(const char *mangled);
  * 获取环境变量内容，以'$'开头
  */
 std::string getEnv(const std::string &key);
+
+// 可以保存任意的对象
+class Any {
+public:
+    using Ptr = std::shared_ptr<Any>;
+
+    Any() = default;
+    ~Any() = default;
+
+    Any(const Any &that) = default;
+    Any(Any &&that) {
+        _type = that._type;
+        _data = std::move(that._data);
+    }
+
+    Any &operator=(const Any &that) = default;
+    Any &operator=(Any &&that) {
+        _type = that._type;
+        _data = std::move(that._data);
+        return *this;
+    }
+
+    template <typename T, typename... ArgsType>
+    void set(ArgsType &&...args) {
+        _type = &typeid(T);
+        _data.reset(new T(std::forward<ArgsType>(args)...), [](void *ptr) { delete (T *)ptr; });
+    }
+
+    template <typename T>
+    void set(std::shared_ptr<T> data) {
+        if (data) {
+            _type = &typeid(T);
+            _data = std::move(data);
+        } else {
+            reset();
+        }
+    }
+
+    template <typename T>
+    T &get(bool safe = true) {
+        if (!_data) {
+            throw std::invalid_argument("Any is empty");
+        }
+        if (safe && !is<T>()) {
+            throw std::invalid_argument("Any::get(): " + demangle(_type->name()) + " unable cast to " + demangle(typeid(T).name()));
+        }
+        return *((T *)_data.get());
+    }
+
+    template <typename T>
+    const T &get(bool safe = true) const {
+        return const_cast<Any &>(*this).get<T>(safe);
+    }
+
+    template <typename T>
+    bool is() const {
+        return _type && typeid(T) == *_type;
+    }
+
+    operator bool() const { return _data.operator bool(); }
+    bool empty() const { return !bool(); }
+
+    void reset() {
+        _type = nullptr;
+        _data = nullptr;
+    }
+
+    Any &operator=(nullptr_t) {
+        reset();
+        return *this;
+    }
+
+    std::string type_name() const {
+        if (!_type) {
+            return "";
+        }
+        return demangle(_type->name());
+    }
+
+private:
+    const std::type_info* _type = nullptr;
+    std::shared_ptr<void> _data;
+};
+
+// 用于保存一些外加属性
+class AnyStorage : public std::unordered_map<std::string, Any> {
+public:
+    AnyStorage() = default;
+    ~AnyStorage() = default;
+    using Ptr = std::shared_ptr<AnyStorage>;
+};
 
 }  // namespace toolkit
 #endif /* UTIL_UTIL_H_ */

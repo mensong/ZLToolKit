@@ -29,13 +29,21 @@ public:
         PRIORITY_HIGHEST
     };
 
-    ThreadPool(int num = 1, Priority priority = PRIORITY_HIGHEST, bool auto_run = true) {
+    ThreadPool(int num = 1, Priority priority = PRIORITY_HIGHEST, bool auto_run = true, bool set_affinity = true,
+               const std::string &pool_name = "thread pool") {
         _thread_num = num;
-        _priority = priority;
+        _on_setup = [pool_name, priority, set_affinity](int index) {
+            std::string name = pool_name + ' ' + std::to_string(index);
+            setPriority(priority);
+            setThreadName(name.data());
+            if (set_affinity) {
+                setThreadAffinity(index % std::thread::hardware_concurrency());
+            }
+        };
+        _logger = Logger::Instance().shared_from_this();
         if (auto_run) {
             start();
         }
-        _logger = Logger::Instance().shared_from_this();
     }
 
     ~ThreadPool() {
@@ -78,11 +86,11 @@ public:
         }
         return true;
 #else
-        static int Min = sched_get_priority_min(SCHED_OTHER);
+        static int Min = sched_get_priority_min(SCHED_FIFO);
         if (Min == -1) {
             return false;
         }
-        static int Max = sched_get_priority_max(SCHED_OTHER);
+        static int Max = sched_get_priority_max(SCHED_FIFO);
         if (Max == -1) {
             return false;
         }
@@ -93,7 +101,7 @@ public:
         }
         struct sched_param params;
         params.sched_priority = Priorities[priority];
-        return pthread_setschedparam(threadId, SCHED_OTHER, &params) == 0;
+        return pthread_setschedparam(threadId, SCHED_FIFO, &params) == 0;
 #endif
     }
 
@@ -103,13 +111,13 @@ public:
         }
         size_t total = _thread_num - _thread_group.size();
         for (size_t i = 0; i < total; ++i) {
-            _thread_group.create_thread(std::bind(&ThreadPool::run, this));
+            _thread_group.create_thread([this, i]() {run(i);});
         }
     }
 
 private:
-    void run() {
-        ThreadPool::setPriority(_priority);
+    void run(size_t index) {
+        _on_setup(index);
         Task::Ptr task;
         while (true) {
             startSleep();
@@ -137,10 +145,10 @@ private:
 
 private:
     size_t _thread_num;
-    TaskQueue<Task::Ptr> _queue;
-    thread_group _thread_group;
-    Priority _priority;
     Logger::Ptr _logger;
+    thread_group _thread_group;
+    TaskQueue<Task::Ptr> _queue;
+    std::function<void(int)> _on_setup;
 };
 
 } /* namespace toolkit */
